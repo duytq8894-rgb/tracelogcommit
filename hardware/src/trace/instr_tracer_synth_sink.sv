@@ -47,8 +47,7 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
   // output matches the original tracer's trace_hart_<id>_commit.log exactly.
   // ---------------------------------------------------------------------------
   function automatic string spike_commit_str(commit_log_pkt_t p);
-    string       instr_word, rd_s;
-    string       rf_s;
+    string       s, instr_word, rd_s, rf_s, mem_s;
     logic [63:0] pc64, res64;
     // spikeCommitLog() takes pc/result as logic[63:0] -> always 16 hex digits,
     // independent of XLEN. Zero-extend a 32-bit core's values.
@@ -64,11 +63,26 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
     if (p.rd < 10) rd_s = $sformatf("%s %0d", rf_s, p.rd);
     else           rd_s = $sformatf("%s%0d", rf_s, p.rd);
 
+    // Base line: <priv> 0x<pc> (0x<instr>) [<reg> 0x<value>]
     // priv printed with %d (matches riscv::spikeCommitLog on the 2-bit priv).
     if (p.rd_fpr || p.rd != 0)
-      return $sformatf("%d 0x%h %s %s 0x%h", p.priv, pc64, instr_word, rd_s, res64);
+      s = $sformatf("%d 0x%h %s %s 0x%h", p.priv, pc64, instr_word, rd_s, res64);
     else
-      return $sformatf("%d 0x%h %s", p.priv, pc64, instr_word);
+      s = $sformatf("%d 0x%h %s", p.priv, pc64, instr_word);
+
+    // Spike-style memory token for loads/stores: " mem 0x<addr> 0x<data>".
+    // The data is printed at the access width (2/4/8/16 hex digits) by slicing
+    // (%h zero-pads to the operand bit-width; SV has no dynamic-width spec).
+    if (p.mem_op != MEM_NONE) begin
+      case (p.mem_size)
+        2'd0:    mem_s = $sformatf(" mem 0x%h 0x%h", p.mem_addr, p.mem_data[7:0]);
+        2'd1:    mem_s = $sformatf(" mem 0x%h 0x%h", p.mem_addr, p.mem_data[15:0]);
+        2'd2:    mem_s = $sformatf(" mem 0x%h 0x%h", p.mem_addr, p.mem_data[31:0]);
+        default: mem_s = $sformatf(" mem 0x%h 0x%h", p.mem_addr, p.mem_data[63:0]);
+      endcase
+      s = {s, mem_s};
+    end
+    return s;
   endfunction
 
   initial begin

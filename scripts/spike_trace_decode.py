@@ -39,6 +39,10 @@ FIELDS_MSB_FIRST = [
     ("wdata",   "XLEN"),
     ("cause",   "XLEN"),
     ("tval",    "XLEN"),
+    ("mem_op",   2),     # 0=none, 1=load, 2=store
+    ("mem_addr", 64),    # fixed 64-bit in the packet
+    ("mem_data", 64),
+    ("mem_size", 2),     # 0=byte,1=half,2=word,3=dword
 ]
 
 
@@ -91,8 +95,19 @@ def spike_commit_log(f, prefix=""):
     rd_s = ("%s %d" % (rf_s, rd)) if rd < 10 else ("%s%d" % (rf_s, rd))
 
     if rd_fpr or rd != 0:
-        return prefix + "%d 0x%0*x %s %s 0x%0*x" % (priv, hexw, pc, instr_word, rd_s, hexw, result)
-    return prefix + "%d 0x%0*x %s" % (priv, hexw, pc, instr_word)
+        s = prefix + "%d 0x%0*x %s %s 0x%0*x" % (priv, hexw, pc, instr_word, rd_s, hexw, result)
+    else:
+        s = prefix + "%d 0x%0*x %s" % (priv, hexw, pc, instr_word)
+
+    # Spike-style memory token for loads/stores: " mem 0x<addr> 0x<data>".
+    # Data printed at the access width (2/4/8/16 hex digits).
+    mem_op = f.get("mem_op", 0)
+    if mem_op != 0:
+        size = f["mem_size"]
+        nib  = 2 << size                      # 2,4,8,16 hex digits
+        data = f["mem_data"] & ((1 << (8 << size)) - 1)
+        s += " mem 0x%016x 0x%0*x" % (f["mem_addr"], nib, data)
+    return s
 
 
 # Minimal cause -> text map for the (optional) exception annotations. Mirrors

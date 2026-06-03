@@ -25,7 +25,17 @@ module instr_tracer_synth_tap import ariane_pkg::*; import instr_tracer_synth_pk
   input  logic              [NR_COMMIT_PORTS-1:0]                  we_fpr_i,
   input  riscv::priv_lvl_t                              priv_lvl_i,
   input  logic                                          debug_mode_i,
-  input  exception_t                                    exception_i
+  input  exception_t                                    exception_i,
+  // LSU memory-access observation (for the Spike-style mem token)
+  input  logic                                          st_valid_i,
+  input  logic              [riscv::PLEN-1:0]           st_paddr_i,
+  input  logic              [riscv::XLEN-1:0]           st_data_i,
+  input  logic              [1:0]                       st_size_i,
+  input  logic                                          ld_valid_i,
+  input  logic                                          ld_kill_i,
+  input  logic              [riscv::PLEN-1:0]           ld_paddr_i,
+  input  logic              [1:0]                       ld_size_i,
+  input  logic                                          flush_addr_i
 );
 
   commit_log_beat_t beat;
@@ -47,6 +57,15 @@ module instr_tracer_synth_tap import ariane_pkg::*; import instr_tracer_synth_pk
     .priv_lvl_i     (priv_lvl_i),
     .debug_mode_i   (debug_mode_i),
     .exception_i    (exception_i),
+    .st_valid_i     (st_valid_i),
+    .st_paddr_i     (st_paddr_i),
+    .st_data_i      (st_data_i),
+    .st_size_i      (st_size_i),
+    .ld_valid_i     (ld_valid_i),
+    .ld_kill_i      (ld_kill_i),
+    .ld_paddr_i     (ld_paddr_i),
+    .ld_size_i      (ld_size_i),
+    .flush_addr_i   (flush_addr_i),
     .trace_valid_o  (valid),
     .trace_beat_o   (beat),
     .trace_ready_i  (ready),

@@ -30,7 +30,17 @@ bind ariane instr_tracer_synth_tap #(
   .we_fpr_i       ( we_fpr_commit_id       ),
   .priv_lvl_i     ( priv_lvl               ),
   .debug_mode_i   ( debug_mode             ),
-  .exception_i    ( commit_stage_i.exception_o )
+  .exception_i    ( commit_stage_i.exception_o ),
+  // LSU memory-access signals (for the Spike-style "mem 0x<addr> 0x<data>")
+  .st_valid_i     ( ex_stage_i.lsu_i.i_store_unit.store_buffer_i.valid_i     ),
+  .st_paddr_i     ( ex_stage_i.lsu_i.i_store_unit.store_buffer_i.paddr_i     ),
+  .st_data_i      ( ex_stage_i.lsu_i.i_store_unit.store_buffer_i.data_i      ),
+  .st_size_i      ( ex_stage_i.lsu_i.i_store_unit.store_buffer_i.data_size_i ),
+  .ld_valid_i     ( ex_stage_i.lsu_i.i_load_unit.req_port_o.tag_valid        ),
+  .ld_kill_i      ( ex_stage_i.lsu_i.i_load_unit.req_port_o.kill_req         ),
+  .ld_paddr_i     ( ex_stage_i.lsu_i.i_load_unit.paddr_i                     ),
+  .ld_size_i      ( ex_stage_i.lsu_i.i_load_unit.req_port_o.data_size        ),
+  .flush_addr_i   ( flush_ctrl_ex )
 );
 // pragma translate_on
 `endif

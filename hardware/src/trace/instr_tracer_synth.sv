@@ -54,6 +54,24 @@ module instr_tracer_synth import ariane_pkg::*; import instr_tracer_synth_pkg::*
   input  logic                                          debug_mode_i,
   input  exception_t                                    exception_i,
 
+  // ----------------------- LSU memory-access observation -------------------
+  // Used to print Spike-style "mem 0x<addr> 0x<data>" for loads/stores. The
+  // addresses are produced by the LSU (out of program order vs commit), so they
+  // are buffered and re-aligned to the retiring instruction by `fu`, mirroring
+  // the simulation tracer's load/store mapping queues.
+  // Store: one entry pushed when the store buffer accepts a store.
+  input  logic                                          st_valid_i,
+  input  logic              [riscv::PLEN-1:0]           st_paddr_i,
+  input  logic              [riscv::XLEN-1:0]           st_data_i,
+  input  logic              [1:0]                       st_size_i,   // 0=B,1=H,2=W,3=D
+  // Load: one entry pushed when a (non-killed) load address is generated.
+  input  logic                                          ld_valid_i,
+  input  logic                                          ld_kill_i,
+  input  logic              [riscv::PLEN-1:0]           ld_paddr_i,
+  input  logic              [1:0]                       ld_size_i,   // 0=B,1=H,2=W,3=D
+  // Drop all pending address mappings on a pipeline flush (mispredict/exception).
+  input  logic                                          flush_addr_i,
+
   // ----------------------- streaming trace-out port ------------------------
   // A standard ready/valid handshake. Connect to a UART, an AXI DMA, a debug
   // trace port, an on-chip buffer, ... Off-chip, feed the captured beats to the
@@ -100,8 +118,49 @@ module instr_tracer_synth import ariane_pkg::*; import instr_tracer_synth_pkg::*
   // ---------------------------------------------------------------------------
   commit_log_beat_t beat;
 
+  // Address-tracking FIFOs (one per memory class). Pushed by the LSU as the
+  // address is generated, popped here when the matching load/store retires.
+  typedef struct packed {
+    logic [63:0] paddr;
+    logic [63:0] data;
+    logic [1:0]  size;
+  } st_track_t;
+  typedef struct packed {
+    logic [63:0] paddr;
+    logic [1:0]  size;
+  } ld_track_t;
+
+  st_track_t   st_din, st_dout0, st_dout1;
+  ld_track_t   ld_din, ld_dout0, ld_dout1;
+  logic [1:0]  st_avail, ld_avail, st_pop, ld_pop;
+  logic        st_of, ld_of, st_uf, ld_uf;
+
+  assign st_din = '{paddr: {{(64-riscv::PLEN){1'b0}}, st_paddr_i}, data: st_data_i, size: st_size_i};
+  assign ld_din = '{paddr: {{(64-riscv::PLEN){1'b0}}, ld_paddr_i}, size: ld_size_i};
+
+  // The store buffer holds data AFTER CVA6's data_align() (a byte rotate-LEFT by
+  // addr[2:0], see ariane_pkg::data_align). Undo it (rotate RIGHT) so mem_data
+  // carries the natural stored value; the formatter then slices the low size
+  // bytes. addr[2] is ignored on RV32, matching data_align.
+  function automatic logic [63:0] byte_ror64(logic [63:0] d, logic [2:0] sh);
+    case (sh)
+      3'd0:    byte_ror64 = d;
+      3'd1:    byte_ror64 = {d[7:0],  d[63:8] };
+      3'd2:    byte_ror64 = {d[15:0], d[63:16]};
+      3'd3:    byte_ror64 = {d[23:0], d[63:24]};
+      3'd4:    byte_ror64 = {d[31:0], d[63:32]};
+      3'd5:    byte_ror64 = {d[39:0], d[63:40]};
+      3'd6:    byte_ror64 = {d[47:0], d[63:48]};
+      default: byte_ror64 = {d[55:0], d[63:56]};
+    endcase
+  endfunction
+
   always_comb begin
-    beat = '0;
+    automatic logic [1:0] ld_taken;     // # of committing loads handled so far
+    beat   = '0;
+    st_pop = '0;
+    ld_pop = '0;
+    ld_taken = '0;
     for (int unsigned p = 0; p < NR_COMMIT_PORTS; p++) begin
       automatic logic [4:0]            rd;
       automatic logic                  wb;
@@ -135,9 +194,39 @@ module instr_tracer_synth import ariane_pkg::*; import instr_tracer_synth_pkg::*
       beat.pkt[p].wdata      = result;
       beat.pkt[p].cause      = '0;
       beat.pkt[p].tval       = '0;
+      beat.pkt[p].mem_op     = MEM_NONE;
+      beat.pkt[p].mem_addr   = '0;
+      beat.pkt[p].mem_data   = '0;
+      beat.pkt[p].mem_size   = '0;
+
+      // Re-align the buffered LSU address to this retiring instruction by `fu`,
+      // exactly as the simulation tracer pops its store/load mapping queues.
+      if (commit_ack_i[p]) begin
+        if (commit_instr_i[p].fu == STORE && !is_amo(commit_instr_i[p].op)) begin
+          // Plain STORE: only ever commits on port 0 (CVA6 commit_stage). AMOs
+          // also report fu==STORE but never push the store buffer (they use the
+          // AMO buffer), so they must NOT pop the store FIFO -> no MEM token,
+          // and the FIFO stays aligned. (Mirrors store_unit: store_buffer.valid
+          // is suppressed for atomics.)
+          beat.pkt[p].mem_op   = MEM_STORE;
+          beat.pkt[p].mem_addr = st_dout0.paddr;
+          beat.pkt[p].mem_data = byte_ror64(st_dout0.data,
+                                   {(st_dout0.paddr[2] & riscv::IS_XLEN64), st_dout0.paddr[1:0]});
+          beat.pkt[p].mem_size = st_dout0.size;
+          st_pop               = 2'd1;
+        end else if (commit_instr_i[p].fu == LOAD) begin
+          // Up to two LOADs may retire together: assign oldest entries in order.
+          beat.pkt[p].mem_op   = MEM_LOAD;
+          beat.pkt[p].mem_addr = (ld_taken == 2'd0) ? ld_dout0.paddr : ld_dout1.paddr;
+          beat.pkt[p].mem_data = result;                  // loaded value (== rd)
+          beat.pkt[p].mem_size = (ld_taken == 2'd0) ? ld_dout0.size : ld_dout1.size;
+          ld_taken             = ld_taken + 2'd1;
+        end
+      end
 
       beat.valid[p] = commit_ack_i[p];
     end
+    ld_pop = ld_taken;
 
     // An exception / interrupt is always reported against the oldest port
     // (port 0), identical to the simulation tracer (commit_instr[0].pc). The
@@ -151,6 +240,37 @@ module instr_tracer_synth import ariane_pkg::*; import instr_tracer_synth_pkg::*
       beat.valid[0]        = 1'b1;
     end
   end
+
+  // ---------------------------------------------------------------------------
+  // Address-tracking FIFOs: push on LSU address generation, pop at commit.
+  // ---------------------------------------------------------------------------
+  instr_tracer_addr_fifo #( .dtype(st_track_t), .AW(4) ) i_store_addr_fifo (
+    .clk_i,
+    .rst_ni,
+    .flush_i    ( flush_addr_i        ),
+    .push_i     ( st_valid_i          ),
+    .data_i     ( st_din              ),
+    .pop_i      ( st_pop              ),
+    .data0_o    ( st_dout0            ),
+    .data1_o    ( st_dout1            ),  // unused (stores pop at most 1/cycle)
+    .avail_o    ( st_avail            ),
+    .overflow_o ( st_of               ),
+    .underflow_o( st_uf               )
+  );
+
+  instr_tracer_addr_fifo #( .dtype(ld_track_t), .AW(4) ) i_load_addr_fifo (
+    .clk_i,
+    .rst_ni,
+    .flush_i    ( flush_addr_i        ),
+    .push_i     ( ld_valid_i & ~ld_kill_i ),
+    .data_i     ( ld_din              ),
+    .pop_i      ( ld_pop              ),
+    .data0_o    ( ld_dout0            ),
+    .data1_o    ( ld_dout1            ),
+    .avail_o    ( ld_avail            ),
+    .overflow_o ( ld_of               ),
+    .underflow_o( ld_uf               )
+  );
 
   // ---------------------------------------------------------------------------
   // Buffer the beats in a hardware FIFO and expose them on a ready/valid port.
@@ -177,8 +297,10 @@ module instr_tracer_synth import ariane_pkg::*; import instr_tracer_synth_pkg::*
   );
 
   assign trace_valid_o = ~empty;
-  // A beat is produced but the buffer is full -> it is lost. Flag it so the
-  // off-chip side knows the trace has a gap (it cannot be reconstructed).
-  assign overflow_o    = any_valid & full;
+  // A beat is produced but the buffer is full -> it is lost. Also flag any
+  // address-FIFO over/underflow, which means a mem token may be misaligned.
+  // Either way the off-chip side knows the trace can no longer be trusted as
+  // gap-free / address-accurate.
+  assign overflow_o    = (any_valid & full) | st_of | ld_of | st_uf | ld_uf;
 
 endmodule : instr_tracer_synth

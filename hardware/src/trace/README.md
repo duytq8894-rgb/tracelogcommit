@@ -52,8 +52,9 @@ không có khái niệm "tệp" hay "chuỗi". Vì vậy ta tách bài toán là
 
 | Tệp | Vai trò | Tổng hợp được? |
 |---|---|---|
-| `instr_tracer_synth_pkg.sv` | Định nghĩa bản ghi nhị phân `commit_log_pkt_t` / `commit_log_beat_t` | ✅ |
-| `instr_tracer_synth.sv` | Module tracer: bắt commit, mux kết quả, đóng gói, đệm FIFO, xuất ra cổng `ready/valid` | ✅ |
+| `instr_tracer_synth_pkg.sv` | Định nghĩa bản ghi nhị phân `commit_log_pkt_t` / `commit_log_beat_t` (gồm trường mem load/store) | ✅ |
+| `instr_tracer_addr_fifo.sv` | FIFO căn địa chỉ load/store (push≤1, pop≤2, flush) cho token `mem 0x<addr> 0x<data>` | ✅ |
+| `instr_tracer_synth.sv` | Module tracer: bắt commit, mux kết quả, FIFO địa chỉ load/store, đóng gói, đệm FIFO, xuất ra cổng `ready/valid` | ✅ |
 | `instr_tracer_synth_sink.sv` | "Bể chứa" — **chỉ mô phỏng**. In **trực tiếp bằng SystemVerilog** (hàm `spike_commit_str()` + `$fwrite`) ra `trace_hart_<id>_commit.synth.log`, đúng định dạng `spikeCommitLog` của tracer gốc (KHÔNG cần Python). Đặt `EmitPktHex=1` để xuất thêm packet hex cho luồng silicon. | ❌ (cố ý) |
 | `../../../scripts/spike_trace_decode.py` | Decoder host: nhị phân → commit log Spike | (script Python) |
 

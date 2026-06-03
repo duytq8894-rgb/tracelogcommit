@@ -41,7 +41,17 @@ package instr_tracer_synth_pkg;
     logic [XLEN-1:0] wdata;       // committed result / write-back value
     logic [XLEN-1:0] cause;       // exception cause   (valid when ex_valid)
     logic [XLEN-1:0] tval;        // trap value        (valid when ex_valid)
+    // Memory access info for load/store (Spike-style "mem 0x<addr> 0x<data>").
+    logic [1:0]      mem_op;      // MEM_NONE / MEM_LOAD / MEM_STORE
+    logic [63:0]     mem_addr;    // physical address of the access (zero-extended)
+    logic [63:0]     mem_data;    // value loaded/stored
+    logic [1:0]      mem_size;    // access size: 0=byte,1=half,2=word,3=dword
   } commit_log_pkt_t;
+
+  // mem_op encoding
+  localparam logic [1:0] MEM_NONE  = 2'd0;
+  localparam logic [1:0] MEM_LOAD  = 2'd1;
+  localparam logic [1:0] MEM_STORE = 2'd2;
 
   // ---------------------------------------------------------------------------
   // One "trace beat": all commit ports of a single cycle kept together so that

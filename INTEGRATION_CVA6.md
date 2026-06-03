@@ -11,10 +11,10 @@ cách khởi tạo (thêm vào project), cách nối tín hiệu vào lõi CVA6,
 |---|---|---|---|
 | `hardware/src/trace/instr_tracer_synth_pkg.sv` | **Định dạng packet**: khai báo `commit_log_pkt_t` (1 lệnh retire = 1 bản ghi nhị phân, layout cố định MSB-first) và `commit_log_beat_t` (gom các cổng commit của 1 chu kỳ). | ✅ | ✅ |
 | `hardware/src/trace/instr_tracer_synth.sv` | **Module tracer chính** (DUT). Bắt tín hiệu commit-stage, mux kết quả (lấy write-back hoặc đọc shadow regfile), đóng gói thành packet, đệm vào FIFO, xuất qua cổng bắt tay `ready/valid`. | ✅ | ✅ |
-| `hardware/src/trace/instr_tracer_synth_sink.sv` | **Bể chứa — CHỈ mô phỏng.** Luôn `ready=1`, rút packet và `$fwrite` ra file hex. Mô hình hoá thứ tiêu thụ trace ngoài đời (UART/DMA). Bọc trong `` `ifndef SYNTHESIS `` + `translate_off`. | ❌ (cố ý) | ❌ |
+| `hardware/src/trace/instr_tracer_synth_sink.sv` | **Bể chứa — CHỈ mô phỏng.** Luôn `ready=1`, **in trực tiếp commit log bằng SystemVerilog** (hàm `spike_commit_str()` tái tạo `riscv::spikeCommitLog` + `$fwrite`) ra `trace_hart_<id>_commit.synth.log` — KHÔNG cần Python. Đặt `EmitPktHex=1` để xuất thêm packet hex cho luồng silicon. Bọc trong `` `ifndef SYNTHESIS `` + `translate_off`. | ❌ (cố ý) | ❌ |
 | `hardware/tb/instr_tracer_synth_tap.sv` | **Wrapper — CHỈ mô phỏng.** Gói `instr_tracer_synth` + `instr_tracer_synth_sink` và nối chúng với nhau, để `bind` chỉ phải nối các tín hiệu *đầu vào quan sát*. | ❌ | ❌ |
 | `hardware/tb/instr_tracer_synth_bind.sv` | **Câu lệnh `bind` — CHỈ mô phỏng.** Gắn `tap` vào lõi CVA6 **mà không sửa code lõi**. Đây là nơi khai báo việc nối tín hiệu. | ❌ | ❌ |
-| `scripts/spike_trace_decode.py` | **Decoder host.** Đọc file packet nhị phân → in ra commit log định dạng Spike (hoặc định dạng `spike --log-commits` cho riscv-dv). Đây là phần "định dạng ASCII" được đẩy ra ngoài chip. | (Python) | (host) |
+| `scripts/spike_trace_decode.py` | **Decoder host — TÙY CHỌN** (cho luồng silicon). Đọc packet nhị phân → commit log Spike (hoặc định dạng `spike --log-commits` cho riscv-dv). Luồng mô phỏng KHÔNG cần file này (sink đã in bằng SV). | (Python) | (host, tùy chọn) |
 | `hardware/src/trace/README.md` | Mô tả thiết kế + định dạng từng trường (tiếng Việt). | — | — |
 | `hardware/src/trace/TUTORIAL.md` | Quy trình build & mô phỏng với CVA6/Ara + đối chiếu log vàng. | — | — |
 | `hardware/src/trace/RISCV_DV.md` | Quy trình đồng-mô phỏng riscv-dv + Spike + tracer này. | — | — |
@@ -146,8 +146,8 @@ ngữ nghĩa: `push_i = any_valid & ~full`, `trace_valid_o = ~empty`,
 1. Biên dịch project CVA6 (đã thêm 5 file + bind) bằng simulator của bạn
    (QuestaSim / VCS / Xcelium / Verilator).
 2. Nạp một chương trình test (ELF/hex) như bình thường của project.
-3. Chạy mô phỏng. Sink sẽ sinh file **`trace_hart_00.pkt.hex`** trong thư mục chạy
-   (mỗi dòng = 1 bản ghi `commit_log_pkt_t` ở dạng hex).
+3. Chạy mô phỏng. Sink **in trực tiếp bằng SystemVerilog** ra file
+   **`trace_hart_0_commit.synth.log`** (định dạng commit log Spike, mỗi dòng 1 lệnh).
 
 > Kiểm tra transcript có dòng kiểu *"Bound instance ... instr_tracer_synth_tap"* để
 > chắc `bind` đã ăn. Nếu không thấy file: kiểm tra (a) bind đúng tên module lõi,
@@ -155,18 +155,24 @@ ngữ nghĩa: `push_i = any_valid & ~full`, `trace_valid_o = ~empty`,
 
 ---
 
-## G. BƯỚC 4 — Giải mã packet → log Spike
+## G. BƯỚC 4 — Đối chiếu log
 
+Sink đã in sẵn `trace_hart_0_commit.synth.log` (không cần Python). Nếu project CVA6
+còn chạy tracer gốc (QuestaSim), đối chiếu trực tiếp:
 ```bash
-# Định dạng commit-log của CVA6 (mặc định)
-python3 scripts/spike_trace_decode.py trace_hart_00.pkt.hex -o trace_synth.log
+diff trace_hart_0_commit.log trace_hart_0_commit.synth.log   # rỗng = khớp từng dòng
+```
 
-# Định dạng 'spike --log-commits' (để dùng với riscv-dv spike_log_to_trace_csv.py)
-python3 scripts/spike_trace_decode.py --format spike trace_hart_00.pkt.hex
-
+### (Tùy chọn) Luồng nhị phân + decoder Python — chỉ khi cần cho silicon/riscv-dv
+Bật `EmitPktHex=1` ở sink để xuất thêm `trace_hart_0.pkt.hex`, rồi:
+```bash
+# Định dạng commit-log của CVA6
+python3 scripts/spike_trace_decode.py trace_hart_0.pkt.hex -o trace_synth.log
+# Định dạng 'spike --log-commits' (cho riscv-dv spike_log_to_trace_csv.py)
+python3 scripts/spike_trace_decode.py --format spike trace_hart_0.pkt.hex
 # Lõi rv32: thêm --xlen 32 ; kèm dòng exception: --exceptions
 ```
-Nếu project CVA6 còn chạy tracer gốc (QuestaSim), đối chiếu:
+Đối chiếu (nếu muốn):
 ```bash
 diff trace_hart_0_commit.log trace_synth.log   # rỗng = khớp từng dòng
 ```

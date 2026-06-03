@@ -2,10 +2,15 @@
 
 A **synthesizable** instruction (commit) tracer for the **CVA6** core, designed
 as a hardware-implementable re-creation of CVA6's simulation-only `instr_tracer`.
-It captures retired instructions and reproduces the **Spike commit-log** format,
-but uses only synthesizable SystemVerilog — the ASCII formatting is moved
-off-chip to a Python decoder (the same split the Verilator flow uses with
-`spike-dasm`).
+It captures retired instructions and reproduces the **Spike commit-log** format
+(the `trace_hart_<id>_commit.log` produced by `riscv::spikeCommitLog`), using
+only synthesizable SystemVerilog for the on-chip capture.
+
+For the **simulation** flow the sink **prints the commit log directly in
+SystemVerilog** (just like the original tracer) — no Python needed. For a **real
+silicon** stream you can instead pack the records to binary and decode them
+off-chip with the included Python script (the same split the Verilator flow uses
+with `spike-dasm`).
 
 > Developed against the [pulp-platform/ara](https://github.com/pulp-platform/ara)
 > project (CVA6 + Ara vector unit). File paths below mirror where each file is
@@ -15,40 +20,50 @@ off-chip to a Python decoder (the same split the Verilator flow uses with
 
 | File | Role | Synthesizable |
 |---|---|---|
-| `hardware/src/trace/instr_tracer_synth_pkg.sv` | Packed binary trace record (`commit_log_pkt_t` / `commit_log_beat_t`) | ✅ |
+| `hardware/src/trace/instr_tracer_synth_pkg.sv` | Packed trace record (`commit_log_pkt_t` / `commit_log_beat_t`) | ✅ |
 | `hardware/src/trace/instr_tracer_synth.sv` | The tracer module: capture commit, result mux, shadow regfile, pack, FIFO, ready/valid out | ✅ |
-| `hardware/src/trace/instr_tracer_synth_sink.sv` | Simulation-only sink that dumps packed hex records | ❌ (sim) |
+| `hardware/src/trace/instr_tracer_synth_sink.sv` | Sim-only sink: **prints the Spike commit log directly in SystemVerilog** (`spike_commit_str()` + `$fwrite`) to `trace_hart_<id>_commit.synth.log`; optional hex dump (`EmitPktHex=1`) for the silicon path | ❌ (sim) |
 | `hardware/tb/instr_tracer_synth_tap.sv` | Sim-only wrapper bundling tracer + sink | ❌ (sim) |
 | `hardware/tb/instr_tracer_synth_bind.sv` | `bind` onto the CVA6 `ariane` core (non-invasive) | ❌ (sim) |
-| `scripts/spike_trace_decode.py` | Host decoder: binary → Spike / riscv-dv commit log | (Python) |
+| `scripts/spike_trace_decode.py` | Optional host decoder: binary records → Spike / riscv-dv commit log (silicon path) | (Python) |
+| `hardware/src/trace/{README,TUTORIAL,RISCV_DV}.md` | Design, simulation tutorial, riscv-dv co-sim flow | — |
+| `INTEGRATION_CVA6.md` | How to drop the files into any CVA6 project (init, signal wiring, run) | — |
 
 ## How it works
 
 ```
-   ON-CHIP (synthesizable)            OFF-CHIP (host)
-   ──────────────────────            ────────────────
-   capture commit + pack binary  →   decode binary → Spike-format ASCII
-   (instr_tracer_synth.sv)           (spike_trace_decode.py)
+                         ┌──────── SIMULATION ────────┐
+   ON-CHIP (synthesizable)│        sink (SV)           │
+   ──────────────────────│  spike_commit_str()+$fwrite│→ trace_hart_0_commit.synth.log
+   capture commit + pack →│  (no Python needed)        │
+   (instr_tracer_synth.sv)└────────────────────────────┘
+            │             ┌──────── REAL SILICON ──────┐
+            └── FIFO ─────│  ready/valid → UART/AXI →   │→ binary stream
+              (binary)    │  spike_trace_decode.py (host)│→ Spike commit log
+                          └────────────────────────────┘
 ```
 
 The simulation-only tracer is not synthesizable because it uses classes, dynamic
-queues (`[$]`), strings, `$sformatf`/`$fwrite`, and clocking blocks. Here those
-map to: packed structs, a fixed-depth FIFO, a fixed-layout binary record, and a
-ready/valid streaming port respectively.
+queues (`[$]`), strings, `$sformatf`/`$fwrite`, and clocking blocks. Here the
+on-chip capture maps to: packed structs, a fixed-depth FIFO, a fixed-layout
+binary record, and a ready/valid streaming port. The ASCII formatting stays
+where it belongs — in a sim-only `$fwrite` (the sink) or an off-chip script.
 
-## Docs
+## Output format (matches `trace_hart_0_commit.log`)
 
-- `hardware/src/trace/README.md` — design and field-by-field format (Vietnamese)
-- `hardware/src/trace/TUTORIAL.md` — build & simulate with the CVA6 core, then
-  diff the decoded log against the original tracer's golden Spike log
-- `hardware/src/trace/RISCV_DV.md` — co-simulation flow: riscv-dv generator +
-  Spike ISS reference + this tracer as the DUT trace, compared with riscv-dv
+```
+3 0x0000000080000000 (0x00000297) x 5 0x0000000080000000
+3 0x0000000080000004 (0x00500513) x10 0x0000000000000005
+3 0x0000000080000008 (0x00008067)
+```
+`<priv> 0x<pc:16hex> (0x<instr>) [<x|f><rd> 0x<value:16hex>]` — one line per
+retired instruction; the register field is omitted when nothing is written back.
 
-## Integrating into Ara
+## Integrating into a CVA6 / Ara project
 
-Drop the files into the Ara tree at the paths shown above, then add them to the
-`ara_test` target in `Bender.yml` (order matters — package, module, then the
-sim-only tap/bind):
+See `INTEGRATION_CVA6.md` for the full guide. In short, drop the files into the
+tree and add them to the test compile target (order: package → module → sink →
+tap → bind), e.g. in Ara's `Bender.yml`:
 
 ```yaml
     - target: ara_test
@@ -64,11 +79,20 @@ sim-only tap/bind):
 The `bind` attaches the tracer to every CVA6 `ariane` instance, so the CVA6
 submodule itself is left untouched.
 
-## Quick decoder self-check
+## Run (simulation) and check
 
 ```bash
-# packed hex records (one commit_log_pkt_t per line) -> Spike commit log
-python3 scripts/spike_trace_decode.py trace_hart_00.pkt.hex
-# riscv-dv compatible (drop-in for spike_log_to_trace_csv.py)
-python3 scripts/spike_trace_decode.py --format spike trace_hart_00.pkt.hex
+# build & run the CVA6/Ara sim (QuestaSim flow), then:
+cd hardware/build
+diff trace_hart_0_commit.log trace_hart_0_commit.synth.log && echo "MATCH"
+```
+An empty `diff` means the synthesizable tracer reproduces the original tracer's
+Spike commit log byte-for-byte.
+
+## Optional: silicon binary path (Python decoder)
+
+Set `EmitPktHex=1` on the sink to also dump raw packed records, then decode:
+```bash
+python3 scripts/spike_trace_decode.py trace_hart_0.pkt.hex            # Spike commit log
+python3 scripts/spike_trace_decode.py --format spike trace_hart_0.pkt.hex  # riscv-dv compatible
 ```

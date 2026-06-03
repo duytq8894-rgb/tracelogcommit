@@ -30,7 +30,8 @@ package instr_tracer_synth_pkg;
   typedef struct packed {
     logic [1:0]      priv;        // privilege level (riscv::priv_lvl_t: M=3,S=1,U=0)
     logic            debug;       // core was in debug mode when it retired
-    logic            ex_valid;    // an exception / interrupt retired here
+    logic            ex_valid;    // an exception / interrupt was reported here
+    logic            retired;     // port committed (commit_ack): a commit-log line is due
     logic            compressed;  // RVC (16-bit) instruction
     logic            we;          // an architectural register was written back
     logic            rd_fpr;      // destination register is a FP register

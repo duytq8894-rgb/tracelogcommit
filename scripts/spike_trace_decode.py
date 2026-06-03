@@ -29,6 +29,7 @@ FIELDS_MSB_FIRST = [
     ("priv",       2),
     ("debug",      1),
     ("ex_valid",   1),
+    ("retired",    1),
     ("compressed", 1),
     ("we",         1),
     ("rd_fpr",     1),
@@ -151,24 +152,24 @@ def main():
                              % (lineno, line))
             continue
         f = unpack(rec, args.xlen)
-        if f["ex_valid"]:
-            if args.exceptions:
-                cause = f["cause"]
-                # MSB set => interrupt in RISC-V mcause encoding.
-                if cause >> (args.xlen - 1):
-                    name = "Interrupt %d" % (cause & ((1 << (args.xlen - 1)) - 1))
-                else:
-                    name = CAUSE_STR.get(cause, "Exception %d" % cause)
-                fout.write("# Exception PC: 0x%0*x Cause: %s tval: 0x%0*x\n"
-                           % (args.xlen // 4, f["pc"], name, args.xlen // 4, f["tval"]))
-            continue
-        # The sim tracer only writes a commit-log line when NOT in debug mode
-        # (instr_tracer.sv:195 guards on `!debug_mode`). Match that here so the
-        # two commit logs stay identical when the core single-steps in debug.
-        if f["debug"]:
-            continue
-        fout.write(spike_commit_log(f, prefix) + "\n")
-        n += 1
+        # Optional exception annotation (decoder-only). The original tracer logs
+        # exceptions to the *human* log, never to the commit log, so these are
+        # emitted as '#' comments and do not affect the commit-log lines.
+        if args.exceptions and f["ex_valid"]:
+            cause = f["cause"]
+            # MSB set => interrupt in RISC-V mcause encoding.
+            if cause >> (args.xlen - 1):
+                name = "Interrupt %d" % (cause & ((1 << (args.xlen - 1)) - 1))
+            else:
+                name = CAUSE_STR.get(cause, "Exception %d" % cause)
+            fout.write("# Exception PC: 0x%0*x Cause: %s tval: 0x%0*x\n"
+                       % (args.xlen // 4, f["pc"], name, args.xlen // 4, f["tval"]))
+        # A commit-log line is emitted for every retired, non-debug instruction
+        # (matches instr_tracer.sv:116 + 195 and the SystemVerilog sink), keyed
+        # on `retired` (= commit_ack) and never on the exception bit.
+        if f["retired"] and not f["debug"]:
+            fout.write(spike_commit_log(f, prefix) + "\n")
+            n += 1
 
     if fin is not sys.stdin:
         fin.close()

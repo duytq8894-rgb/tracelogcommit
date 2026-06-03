@@ -122,6 +122,10 @@ module instr_tracer_synth import ariane_pkg::*; import instr_tracer_synth_pkg::*
       beat.pkt[p].priv       = priv_lvl_i;
       beat.pkt[p].debug      = debug_mode_i;
       beat.pkt[p].ex_valid   = 1'b0;
+      // `retired` (= commit_ack) decides commit-log emission, independent of the
+      // exception override below. Mirrors the original tracer, whose commit-log
+      // line is gated only by commit_ack (+ !debug), never by exceptions.
+      beat.pkt[p].retired    = commit_ack_i[p];
       beat.pkt[p].compressed = commit_instr_i[p].is_compressed;
       beat.pkt[p].we         = wb;
       beat.pkt[p].rd_fpr     = rd_is_fpr;

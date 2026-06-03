@@ -95,16 +95,20 @@ Sau khi chạy xong, trong `hardware/build/` có:
 | File | Nguồn |
 |---|---|
 | `trace_hart_0_commit.log` | **Tracer gốc** (log Spike vàng) |
-| `trace_hart_0.log` | Tracer gốc (bản người-đọc) |
-| `trace_hart_00.pkt.hex` | **Module mới** (packet nhị phân, mỗi dòng 1 bản ghi hex) |
+| `trace_hart_0.log` | Tracer gốc (bản người-đọc disassembled) |
+| `trace_hart_0_commit.synth.log` | **Module mới** — sink **in trực tiếp bằng SystemVerilog**, đúng định dạng `spikeCommitLog`, KHÔNG cần Python |
+
+> Sink (`instr_tracer_synth_sink.sv`) format từng bản ghi bằng hàm SV
+> `spike_commit_str()` (tái tạo `riscv::spikeCommitLog`) rồi `$fwrite` ra file —
+> giống hệt cách tracer gốc in `trace_hart_0_commit.log`.
 
 ---
 
 ## Phần 3B — Mô phỏng bằng Verilator  (thay thế, mã nguồn mở)
 
 Dưới Verilator, tracer gốc bị loại (`` `ifndef VERILATOR ``) nhưng module mới (RTL
-thuần) vẫn chạy → vẫn có `trace_hart_00.pkt.hex`. Không có log vàng để diff trực tiếp
-(thay vào đó so với `spike-dasm` của file `.dasm` nếu muốn).
+thuần) vẫn chạy → vẫn có `trace_hart_0_commit.synth.log` (sink in trực tiếp bằng SV).
+Không có log vàng để diff trực tiếp (thay vào đó so với `spike-dasm` của file `.dasm`).
 
 ```bash
 cd $ARA/hardware
@@ -117,21 +121,30 @@ make verilate
 make app=hello_world simv
 ```
 
-`trace_hart_00.pkt.hex` xuất hiện trong thư mục chạy (`hardware/build/verilator` hoặc
-`hardware/`); kiểm tra bằng `find hardware -name 'trace_hart_00.pkt.hex'`.
+`trace_hart_0_commit.synth.log` xuất hiện trong thư mục chạy; kiểm tra bằng
+`find hardware -name 'trace_hart_0_commit.synth.log'`.
 
 ---
 
-## Phần 4 — Giải mã packet → log Spike và đối chiếu
+## Phần 4 — Đối chiếu log
 
-Decoder host biến packet nhị phân thành đúng định dạng `spikeCommitLog`:
+Sink đã in sẵn `trace_hart_0_commit.synth.log` bằng SystemVerilog (định dạng
+`spikeCommitLog`), nên **chỉ cần diff** với log vàng của tracer gốc:
+
+```bash
+cd $ARA/hardware/build
+diff trace_hart_0_commit.log trace_hart_0_commit.synth.log && \
+  echo "TRÙNG KHỚP: sink synthesizable in đúng log Spike như tracer gốc."
+```
+
+### (Tùy chọn) Luồng nhị phân + decoder Python — chỉ khi cần cho silicon thật
+Nếu muốn lấy packet nhị phân (vd để thử kênh xuất ra ngoài chip), bật tham số
+`EmitPktHex=1` của sink → sinh thêm `trace_hart_0.pkt.hex`, rồi giải mã:
 
 ```bash
 cd $ARA
-
-# Giải mã (XLEN=64 cho cấu hình mặc định rv64)
 python3 scripts/spike_trace_decode.py \
-        hardware/build/trace_hart_00.pkt.hex \
+        hardware/build/trace_hart_0.pkt.hex \
         -o hardware/build/trace_synth_commit.log
 
 # (tùy chọn) kèm dòng exception dưới dạng comment '#':

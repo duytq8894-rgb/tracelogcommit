@@ -101,14 +101,17 @@ def spike_commit_log(f, prefix=""):
     else:
         s = prefix + "%d 0x%0*x %s" % (priv, hexw, pc, instr_word)
 
-    # Spike-style memory token for loads/stores: " mem 0x<addr> 0x<data>".
-    # Data printed at the access width (2/4/8/16 hex digits).
+    # Spike-style memory token. STORE: " mem 0x<addr> 0x<data>" (data at access
+    # width). LOAD: " mem 0x<addr>" only -- the loaded value already shows as the
+    # rd write, matching Spike's commit log.
     mem_op = f.get("mem_op", 0)
-    if mem_op != 0:
+    if mem_op == 2:                           # STORE
         size = f["mem_size"]
         nib  = 2 << size                      # 2,4,8,16 hex digits
         data = f["mem_data"] & ((1 << (8 << size)) - 1)
         s += " mem 0x%016x 0x%0*x" % (f["mem_addr"], nib, data)
+    elif mem_op == 1:                         # LOAD: address only, no data
+        s += " mem 0x%016x" % f["mem_addr"]
 
     # Spike-style CSR write token: " c<addr>_<name> 0x<value>" (addr in decimal;
     # ABI name appended when known, e.g. "c769_misa").

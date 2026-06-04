@@ -103,10 +103,10 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
     else
       s = $sformatf("%d 0x%h %s", p.priv, pc64, instr_word);
 
-    // Spike-style memory token for loads/stores: " mem 0x<addr> 0x<data>".
-    // The data is printed at the access width (2/4/8/16 hex digits) by slicing
-    // (%h zero-pads to the operand bit-width; SV has no dynamic-width spec).
-    if (p.mem_op != MEM_NONE) begin
+    // Spike-style memory token. STORE prints " mem 0x<addr> 0x<data>" (data at
+    // the access width via slicing). LOAD prints only " mem 0x<addr>" -- the
+    // loaded value already appears as the rd write, matching Spike's commit log.
+    if (p.mem_op == MEM_STORE) begin
       case (p.mem_size)
         2'd0:    mem_s = $sformatf(" mem 0x%h 0x%h", p.mem_addr, p.mem_data[7:0]);
         2'd1:    mem_s = $sformatf(" mem 0x%h 0x%h", p.mem_addr, p.mem_data[15:0]);
@@ -114,6 +114,8 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
         default: mem_s = $sformatf(" mem 0x%h 0x%h", p.mem_addr, p.mem_data[63:0]);
       endcase
       s = {s, mem_s};
+    end else if (p.mem_op == MEM_LOAD) begin
+      s = {s, $sformatf(" mem 0x%h", p.mem_addr)};
     end
 
     // Spike-style CSR write token: " c<addr>_<name> 0x<value>" (addr in decimal;

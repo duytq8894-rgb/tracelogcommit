@@ -74,8 +74,8 @@ def canon(rec, opts):
         r = re.sub(r'(\bc\d+(?:_\w+)?\s+0x)[0-9a-f]+', r'\1WARL', r)
     if opts.no_csr:
         r = " ".join(re.sub(r'\bc\d+(?:_\w+)?\s+0x[0-9a-f]+', '', r).split())
-    if opts.no_mem:
-        r = " ".join(re.sub(r'\bmem\s+0x[0-9a-f]+\s+0x[0-9a-f]+', '', r).split())
+    if opts.no_mem:   # store: "mem 0x<addr> 0x<data>" ; load: "mem 0x<addr>"
+        r = " ".join(re.sub(r'\bmem\s+0x[0-9a-f]+(?:\s+0x[0-9a-f]+)?', '', r).split())
     return ("%d 0x%016x (0x%s) %s" % (priv, pc, insn, r)).rstrip()
 
 

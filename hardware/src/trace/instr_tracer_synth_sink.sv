@@ -42,6 +42,40 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
   assign trace_ready_o = 1'b1;
 
   // ---------------------------------------------------------------------------
+  // CSR address -> ABI name (mirrors CVA6 instr_trace_item.svh csrAddrToStr).
+  // Returns "" for CSRs not in the table (then only the number is printed).
+  // ---------------------------------------------------------------------------
+  function automatic string csr_name(logic [11:0] a);
+    case (a)
+      12'h001: csr_name = "fflags";    12'h002: csr_name = "frm";
+      12'h003: csr_name = "fcsr";
+      12'h100: csr_name = "sstatus";   12'h104: csr_name = "sie";
+      12'h105: csr_name = "stvec";     12'h106: csr_name = "scounteren";
+      12'h140: csr_name = "sscratch";  12'h141: csr_name = "sepc";
+      12'h142: csr_name = "scause";    12'h143: csr_name = "stval";
+      12'h144: csr_name = "sip";       12'h180: csr_name = "satp";
+      12'h300: csr_name = "mstatus";   12'h301: csr_name = "misa";
+      12'h302: csr_name = "medeleg";   12'h303: csr_name = "mideleg";
+      12'h304: csr_name = "mie";       12'h305: csr_name = "mtvec";
+      12'h306: csr_name = "mcounteren";12'h340: csr_name = "mscratch";
+      12'h341: csr_name = "mepc";      12'h342: csr_name = "mcause";
+      12'h343: csr_name = "mtval";     12'h344: csr_name = "mip";
+      12'h3a0: csr_name = "pmpcfg0";   12'h3b0: csr_name = "pmpaddr0";
+      12'h7a0: csr_name = "tselect";   12'h7a1: csr_name = "tdata1";
+      12'h7a2: csr_name = "tdata2";    12'h7a3: csr_name = "tdata3";
+      12'h7a4: csr_name = "tinfo";     12'h7b0: csr_name = "dcsr";
+      12'h7b1: csr_name = "dpc";       12'h7b2: csr_name = "dscratch0";
+      12'h7b3: csr_name = "dscratch1";
+      12'hb00: csr_name = "mcycle";    12'hb02: csr_name = "minstret";
+      12'hc00: csr_name = "cycle";     12'hc01: csr_name = "time";
+      12'hc02: csr_name = "instret";
+      12'hf11: csr_name = "mvendorid"; 12'hf12: csr_name = "marchid";
+      12'hf13: csr_name = "mimpid";    12'hf14: csr_name = "mhartid";
+      default: csr_name = "";
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
   // Format one retired-instruction record into a Spike commit-log line.
   // Reproduces riscv::spikeCommitLog() (riscv_pkg.sv) field-for-field, so the
   // output matches the original tracer's trace_hart_<id>_commit.log exactly.
@@ -83,9 +117,14 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
       s = {s, mem_s};
     end
 
-    // Spike-style CSR write token: " c<addr> 0x<value>" (addr in decimal).
+    // Spike-style CSR write token: " c<addr>_<name> 0x<value>" (addr in decimal;
+    // ABI name appended when known, e.g. "c769_misa").
     if (p.csr_we) begin
-      s = {s, $sformatf(" c%0d 0x%h", p.csr_addr, 64'(p.csr_wdata))};
+      string nm = csr_name(p.csr_addr);
+      if (nm != "")
+        s = {s, $sformatf(" c%0d_%s 0x%h", p.csr_addr, nm, 64'(p.csr_wdata))};
+      else
+        s = {s, $sformatf(" c%0d 0x%h", p.csr_addr, 64'(p.csr_wdata))};
     end
     return s;
   endfunction

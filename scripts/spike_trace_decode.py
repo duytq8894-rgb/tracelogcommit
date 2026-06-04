@@ -111,9 +111,12 @@ def spike_commit_log(f, prefix=""):
         data = f["mem_data"] & ((1 << (8 << size)) - 1)
         s += " mem 0x%016x 0x%0*x" % (f["mem_addr"], nib, data)
 
-    # Spike-style CSR write token: " c<addr> 0x<value>" (addr in decimal).
+    # Spike-style CSR write token: " c<addr>_<name> 0x<value>" (addr in decimal;
+    # ABI name appended when known, e.g. "c769_misa").
     if f.get("csr_we", 0):
-        s += " c%d 0x%016x" % (f["csr_addr"], f["csr_wdata"] & ((1 << 64) - 1))
+        nm  = CSR_NAME.get(f["csr_addr"], "")
+        tag = ("c%d_%s" % (f["csr_addr"], nm)) if nm else ("c%d" % f["csr_addr"])
+        s += " %s 0x%016x" % (tag, f["csr_wdata"] & ((1 << 64) - 1))
     return s
 
 
@@ -134,6 +137,26 @@ CAUSE_STR = {
     12: "Instruction Page Fault",
     13: "Load Page Fault",
     15: "Store Page Fault",
+}
+
+# CSR address -> ABI name (mirrors CVA6 instr_trace_item.svh csrAddrToStr and the
+# SystemVerilog sink's csr_name()). Address is the decimal token prefix; the name
+# is appended as c<dec>_<name> (e.g. 0x301=769 -> "c769_misa").
+CSR_NAME = {
+    0x001: "fflags", 0x002: "frm", 0x003: "fcsr",
+    0x100: "sstatus", 0x104: "sie", 0x105: "stvec", 0x106: "scounteren",
+    0x140: "sscratch", 0x141: "sepc", 0x142: "scause", 0x143: "stval",
+    0x144: "sip", 0x180: "satp",
+    0x300: "mstatus", 0x301: "misa", 0x302: "medeleg", 0x303: "mideleg",
+    0x304: "mie", 0x305: "mtvec", 0x306: "mcounteren", 0x340: "mscratch",
+    0x341: "mepc", 0x342: "mcause", 0x343: "mtval", 0x344: "mip",
+    0x3a0: "pmpcfg0", 0x3b0: "pmpaddr0",
+    0x7a0: "tselect", 0x7a1: "tdata1", 0x7a2: "tdata2", 0x7a3: "tdata3",
+    0x7a4: "tinfo", 0x7b0: "dcsr", 0x7b1: "dpc", 0x7b2: "dscratch0",
+    0x7b3: "dscratch1",
+    0xb00: "mcycle", 0xb02: "minstret",
+    0xc00: "cycle", 0xc01: "time", 0xc02: "instret",
+    0xf11: "mvendorid", 0xf12: "marchid", 0xf13: "mimpid", 0xf14: "mhartid",
 }
 
 

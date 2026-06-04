@@ -23,8 +23,10 @@
 #   compare_spike_log.py SPIKE_LOG OUR_LOG [options]
 #   compare_spike_log.py SPIKE_LOG --extract-only -o spike_commits.log
 #
-# Options let you tolerate the documented divergences of the non-invasive tracer
-# (e.g. --ignore-csr-val for WARL CSRs, --start-pc to skip the boot ROM).
+# By default it also drops boot-ROM commits (PC < --ram-base, default 0x80000000,
+# e.g. the ROM at 0x10000000) so only RAM-region execution is compared; pass
+# --no-ram-filter to keep them. Other options tolerate the documented divergences
+# of the non-invasive tracer (e.g. --ignore-csr-val for WARL CSRs).
 
 import argparse
 import re
@@ -89,6 +91,11 @@ def main():
     ap.add_argument("-o", "--output", default="-", help="output file for --extract-only ('-'=stdout)")
     ap.add_argument("--keep-core", action="store_true",
                     help="(--extract-only) keep the 'core N:' prefix in the extracted lines")
+    ap.add_argument("--ram-base", default="0x80000000",
+                    help="RAM base; drop every commit below it (the boot ROM, e.g. 0x10000000) so "
+                         "only RAM-region execution is compared. Default 0x80000000.")
+    ap.add_argument("--no-ram-filter", action="store_true",
+                    help="do NOT drop boot-ROM lines (compare everything, including PC<ram-base)")
     ap.add_argument("--start-pc", default=None,
                     help="align: drop leading commits until this PC on BOTH logs (e.g. 0x80000000)")
     ap.add_argument("--max-diffs", type=int, default=20, help="how many mismatches to print")
@@ -99,8 +106,13 @@ def main():
     ap.add_argument("--no-mem", action="store_true", help="ignore mem tokens entirely")
     args = ap.parse_args()
     start_pc = int(args.start_pc, 16) if args.start_pc else None
+    ram_base = None if args.no_ram_filter else int(args.ram_base, 16)
 
-    spike = trim_to_pc(extract_commits(args.spike_log), start_pc)
+    # drop boot-ROM commits (PC < ram_base) so only RAM-region execution remains
+    def ram_filter(recs):
+        return recs if ram_base is None else [r for r in recs if r[1] >= ram_base]
+
+    spike = trim_to_pc(ram_filter(extract_commits(args.spike_log)), start_pc)
 
     # --- mode 1: just delete the trace lines, print the commit lines ----------
     if args.extract_only:
@@ -110,12 +122,14 @@ def main():
             fout.write("%s%d 0x%016x (0x%s)%s\n" % (pre, priv, pc, insn, rest.rstrip()))
         if fout is not sys.stdout:
             fout.close()
-        sys.stderr.write("[compare_spike_log] extracted %d commit lines (trace lines dropped)\n" % len(spike))
+        sys.stderr.write("[compare_spike_log] extracted %d commit lines "
+                         "(trace lines%s dropped)\n"
+                         % (len(spike), "" if ram_base is None else " + boot ROM PC<0x%x" % ram_base))
         return
 
     if not args.our_log:
         ap.error("OUR_LOG is required unless --extract-only is given")
-    ours = trim_to_pc(extract_commits(args.our_log), start_pc)
+    ours = trim_to_pc(ram_filter(extract_commits(args.our_log)), start_pc)
 
     # --- mode 2: compare in program order -------------------------------------
     n = min(len(spike), len(ours))

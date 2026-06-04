@@ -31,6 +31,12 @@ bind ariane instr_tracer_synth_tap #(
   .priv_lvl_i     ( priv_lvl               ),
   .debug_mode_i   ( debug_mode             ),
   .exception_i    ( commit_stage_i.exception_o ),
+  // CSR write signals (for the Spike-style "c<addr> 0x<value>")
+  .csr_commit_i   ( csr_commit_commit_ex   ),
+  .csr_op_i       ( csr_op_commit_csr      ),
+  .csr_waddr_i    ( csr_addr_ex_csr        ),
+  .csr_operand_i  ( csr_wdata_commit_csr   ),
+  .csr_old_i      ( csr_rdata_csr_commit   ),
   // LSU memory-access signals (for the Spike-style "mem 0x<addr> 0x<data>")
   .st_valid_i     ( ex_stage_i.lsu_i.i_store_unit.store_buffer_i.valid_i     ),
   .st_paddr_i     ( ex_stage_i.lsu_i.i_store_unit.store_buffer_i.paddr_i     ),

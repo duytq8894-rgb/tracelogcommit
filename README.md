@@ -59,11 +59,14 @@ where it belongs — in a sim-only `$fwrite` (the sink) or an off-chip script.
 3 0x0000000080000008 (0x00008067)
 3 0x0000000080002000 (0x00b53023) mem 0x0000000080003000 0xdeadbeefcafe1234
 3 0x0000000080002004 (0x0085b503) x10 0x000000000000000f mem 0x0000000080003000 0x000000000000000f
+3 0x0000000080000010 (0x30009573) x10 0x0000000000001800 c768 0x0000000000000088
 ```
-`<priv> 0x<pc:16hex> (0x<instr>) [<x|f><rd> 0x<value:16hex>] [mem 0x<addr> 0x<data>]`
+`<priv> 0x<pc:16hex> (0x<instr>) [<x|f><rd> 0x<value:16hex>] [mem 0x<addr> 0x<data>] [c<csr> 0x<value>]`
 — one line per retired instruction. The register field is omitted when nothing is
-written back; the `mem` token (address + data, data sized to the access width) is
-appended for loads and stores.
+written back; the `mem` token (address + data, sized to the access) is appended for
+loads/stores; the `c<csr>` token (CSR number in decimal + written value) is appended
+for csrrw/csrrs/csrrc. (CSR value is post-op, pre-WARL — see the per-field note in the
+package; differs from Spike's post-WARL value for WARL CSRs.)
 
 ## Integrating into a CVA6 / Ara project
 

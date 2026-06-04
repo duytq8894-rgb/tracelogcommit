@@ -54,6 +54,16 @@ module instr_tracer_synth import ariane_pkg::*; import instr_tracer_synth_pkg::*
   input  logic                                          debug_mode_i,
   input  exception_t                                    exception_i,
 
+  // ----------------------- CSR write observation ---------------------------
+  // Used to print Spike-style "c<addr> 0x<value>" when a CSR is written. A CSR
+  // instruction commits in-order on port 0 (commit_stage excludes CSR on port
+  // 1), so this is captured directly at commit -- no buffering needed.
+  input  logic                                          csr_commit_i, // a CSR instr committed
+  input  fu_op                                          csr_op_i,     // CSR operation
+  input  logic              [11:0]                      csr_waddr_i,  // CSR address
+  input  riscv::xlen_t                                  csr_operand_i,// operand (rs1/zimm)
+  input  riscv::xlen_t                                  csr_old_i,    // pre-write CSR value
+
   // ----------------------- LSU memory-access observation -------------------
   // Used to print Spike-style "mem 0x<addr> 0x<data>" for loads/stores. The
   // addresses are produced by the LSU (out of program order vs commit), so they
@@ -238,6 +248,23 @@ module instr_tracer_synth import ariane_pkg::*; import instr_tracer_synth_pkg::*
       beat.pkt[0].cause    = exception_i.cause;
       beat.pkt[0].tval     = exception_i.tval;
       beat.valid[0]        = 1'b1;
+    end
+
+    // CSR write (csrrw/csrrs/csrrc) -- commits in-order on port 0. Reconstruct
+    // the written value from op + old value + operand, matching csr_regfile's
+    // read-modify (csr_regfile.sv:900-902). NOTE: this is the value BEFORE the
+    // per-CSR WARL mask, so for WARL CSRs it differs from Spike's post-WARL
+    // committed value (see csr_wdata comment in the pkg). csr_old_i is the
+    // csr_rdata_o read output; for mip/sip that already has the SEIP interrupt
+    // OR'd in, a second small divergence on SET/CLEAR for those two CSRs.
+    if (csr_commit_i && (csr_op_i inside {CSR_WRITE, CSR_SET, CSR_CLEAR})) begin
+      beat.pkt[0].csr_we   = 1'b1;
+      beat.pkt[0].csr_addr = csr_waddr_i;
+      unique case (csr_op_i)
+        CSR_SET:   beat.pkt[0].csr_wdata = csr_operand_i | csr_old_i;
+        CSR_CLEAR: beat.pkt[0].csr_wdata = (~csr_operand_i) & csr_old_i;
+        default:   beat.pkt[0].csr_wdata = csr_operand_i;       // CSR_WRITE
+      endcase
     end
   end
 

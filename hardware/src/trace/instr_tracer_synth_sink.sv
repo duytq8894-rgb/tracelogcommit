@@ -82,6 +82,11 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
       endcase
       s = {s, mem_s};
     end
+
+    // Spike-style CSR write token: " c<addr> 0x<value>" (addr in decimal).
+    if (p.csr_we) begin
+      s = {s, $sformatf(" c%0d 0x%h", p.csr_addr, 64'(p.csr_wdata))};
+    end
     return s;
   endfunction
 

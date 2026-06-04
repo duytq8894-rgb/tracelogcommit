@@ -43,6 +43,9 @@ FIELDS_MSB_FIRST = [
     ("mem_addr", 64),    # fixed 64-bit in the packet
     ("mem_data", 64),
     ("mem_size", 2),     # 0=byte,1=half,2=word,3=dword
+    ("csr_we",    1),    # a CSR was written
+    ("csr_addr",  12),   # CSR address
+    ("csr_wdata", "XLEN"),
 ]
 
 
@@ -107,6 +110,10 @@ def spike_commit_log(f, prefix=""):
         nib  = 2 << size                      # 2,4,8,16 hex digits
         data = f["mem_data"] & ((1 << (8 << size)) - 1)
         s += " mem 0x%016x 0x%0*x" % (f["mem_addr"], nib, data)
+
+    # Spike-style CSR write token: " c<addr> 0x<value>" (addr in decimal).
+    if f.get("csr_we", 0):
+        s += " c%d 0x%016x" % (f["csr_addr"], f["csr_wdata"] & ((1 << 64) - 1))
     return s
 
 

@@ -46,6 +46,15 @@ package instr_tracer_synth_pkg;
     logic [63:0]     mem_addr;    // physical address of the access (zero-extended)
     logic [63:0]     mem_data;    // value loaded/stored
     logic [1:0]      mem_size;    // access size: 0=byte,1=half,2=word,3=dword
+    // CSR write info (Spike-style "c<addr> 0x<value>").
+    logic            csr_we;      // a CSR was written (csrrw/csrrs/csrrc)
+    logic [11:0]     csr_addr;    // CSR address
+    // value written, reconstructed at commit = post-op but PRE per-CSR WARL mask
+    // (and, for mip/sip SET/CLEAR, the old value is the SEIP-OR'd csr_rdata_o).
+    // So for WARL CSRs (mstatus, m/stvec, m/sepc, satp, mip/mie, pmp*, *counteren,
+    // ...) this differs from Spike's post-WARL value; an exact match would need a
+    // post-WARL read-back from csr_regfile (an invasive CVA6 change).
+    logic [XLEN-1:0] csr_wdata;
   } commit_log_pkt_t;
 
   // mem_op encoding

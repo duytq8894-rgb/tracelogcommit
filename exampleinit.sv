@@ -12,6 +12,12 @@ instr_tracer_synth #(.FifoDepth(32)) i_tracer (
   .we_gpr_i(i_dut.i_ariane.we_gpr_commit_id), .we_fpr_i(i_dut.i_ariane.we_fpr_commit_id),
   .priv_lvl_i(i_dut.i_ariane.priv_lvl), .debug_mode_i(i_dut.i_ariane.debug_mode),
   .exception_i(i_dut.i_ariane.commit_stage_i.exception_o),
+  // CSR write signals -> Spike-style "c<addr> 0x<value>" for csrrw/csrrs/csrrc
+  .csr_commit_i ( i_dut.i_ariane.csr_commit_commit_ex ),
+  .csr_op_i     ( i_dut.i_ariane.csr_op_commit_csr    ),
+  .csr_waddr_i  ( i_dut.i_ariane.csr_addr_ex_csr      ),
+  .csr_operand_i( i_dut.i_ariane.csr_wdata_commit_csr ),
+  .csr_old_i    ( i_dut.i_ariane.csr_rdata_csr_commit ),
   // LSU memory-access signals -> Spike-style "mem 0x<addr> 0x<data>" for load/store
   .st_valid_i ( i_dut.i_ariane.ex_stage_i.lsu_i.i_store_unit.store_buffer_i.valid_i     ),
   .st_paddr_i ( i_dut.i_ariane.ex_stage_i.lsu_i.i_store_unit.store_buffer_i.paddr_i     ),

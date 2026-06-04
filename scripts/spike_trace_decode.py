@@ -93,9 +93,8 @@ def spike_commit_log(f, prefix=""):
         instr_word = "(0x%08x)" % (instr & 0xFFFFFFFF)
 
     rf_s = "f" if rd_fpr else "x"
-    # Note the (intentional) space for single-digit register numbers, kept
-    # byte-for-byte identical to the SystemVerilog formatting.
-    rd_s = ("%s %d" % (rf_s, rd)) if rd < 10 else ("%s%d" % (rf_s, rd))
+    # Register number with NO space, even for a single digit (e.g. "x6", "x31").
+    rd_s = "%s%d" % (rf_s, rd)
 
     if rd_fpr or rd != 0:
         s = prefix + "%d 0x%0*x %s %s 0x%0*x" % (priv, hexw, pc, instr_word, rd_s, hexw, result)

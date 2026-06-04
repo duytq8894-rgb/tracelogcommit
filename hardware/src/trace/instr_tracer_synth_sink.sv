@@ -93,9 +93,8 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
     if (p.instr[1:0] != 2'b11) instr_word = $sformatf("(0x%h)", p.instr[15:0]);
     else                       instr_word = $sformatf("(0x%h)", p.instr);
 
-    // Note the (intentional) space for single-digit register numbers ("x 8").
-    if (p.rd < 10) rd_s = $sformatf("%s %0d", rf_s, p.rd);
-    else           rd_s = $sformatf("%s%0d", rf_s, p.rd);
+    // Register number with NO space, even for a single digit (e.g. "x6", "x31").
+    rd_s = $sformatf("%s%0d", rf_s, p.rd);
 
     // Base line: <priv> 0x<pc> (0x<instr>) [<reg> 0x<value>]
     // priv printed with %d (matches riscv::spikeCommitLog on the 2-bit priv).

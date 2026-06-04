@@ -23,12 +23,17 @@
 #   compare_spike_log.py SPIKE_LOG OUR_LOG [options]
 #   compare_spike_log.py SPIKE_LOG --extract-only -o spike_commits.log
 #
+# The compare result is echoed to stdout AND written to "compare_<SPIKE_LOG>"
+# (the spike-log name prefixed with "compare_", next to the spike log; override
+# with -o). Register numbers are compared space-insensitively ("x 6" == "x6").
+#
 # By default it also drops boot-ROM commits (PC < --ram-base, default 0x80000000,
 # e.g. the ROM at 0x10000000) so only RAM-region execution is compared; pass
 # --no-ram-filter to keep them. Other options tolerate the documented divergences
 # of the non-invasive tracer (e.g. --ignore-csr-val for WARL CSRs).
 
 import argparse
+import os
 import re
 import sys
 
@@ -61,6 +66,8 @@ def canon(rec, opts):
     """Canonical comparable string for one commit record."""
     priv, pc, insn, rest = rec
     r = " ".join(rest.split()).lower()        # collapse whitespace
+    # Normalize register spacing so Spike's "x 6"/"f 3" matches our "x6"/"f3".
+    r = re.sub(r'\b([xf])\s+(\d)', r'\1\2', r)
     if opts.ignore_csr_name:                  # c769_misa -> c769
         r = re.sub(r'(\bc\d+)_\w+', r'\1', r)
     if opts.ignore_csr_val:                    # WARL CSRs: blank the value
@@ -132,6 +139,13 @@ def main():
     ours = trim_to_pc(ram_filter(extract_commits(args.our_log)), start_pc)
 
     # --- mode 2: compare in program order -------------------------------------
+    # Result is written to an output file named "compare_<spike-log-name>"
+    # (next to the spike log), and also echoed to stdout.
+    report = []
+    def emit(line=""):
+        report.append(line)
+        print(line)
+
     n = min(len(spike), len(ours))
     mism = 0
     shown = 0
@@ -141,19 +155,33 @@ def main():
             mism += 1
             if shown < args.max_diffs:
                 shown += 1
-                print("MISMATCH @#%d (pc=0x%016x):\n  spike: %s\n  ours : %s"
-                      % (i, spike[i][1], cs, co))
-    print("\n==== summary ====")
-    print("spike commit lines (trace dropped): %d" % len(spike))
-    print("our   commit lines                : %d" % len(ours))
-    print("compared (in order)               : %d" % n)
-    print("matched                           : %d" % (n - mism))
-    print("mismatched                        : %d" % mism)
+                emit("MISMATCH @#%d (pc=0x%016x):\n  spike: %s\n  ours : %s"
+                     % (i, spike[i][1], cs, co))
+    emit("\n==== summary ====")
+    emit("spike log : %s" % args.spike_log)
+    emit("our   log : %s" % args.our_log)
+    emit("spike commit lines (trace dropped): %d" % len(spike))
+    emit("our   commit lines                : %d" % len(ours))
+    emit("compared (in order)               : %d" % n)
+    emit("matched                           : %d" % (n - mism))
+    emit("mismatched                        : %d" % mism)
     if len(spike) != len(ours):
-        print("LENGTH DIFFERS by %d (alignment? use --start-pc, or check trailing instrs)"
-              % abs(len(spike) - len(ours)))
+        emit("LENGTH DIFFERS by %d (alignment? use --start-pc, or check trailing instrs)"
+             % abs(len(spike) - len(ours)))
     ok = (mism == 0 and len(spike) == len(ours))
-    print("RESULT: %s" % ("PASS" if ok else "FAIL"))
+    emit("RESULT: %s" % ("PASS" if ok else "FAIL"))
+
+    # output file name = "compare_" + spike-log basename, in the spike log's dir
+    if args.output and args.output != "-":
+        out_path = args.output
+    else:
+        base = os.path.basename(args.spike_log)
+        if base in ("", "-"):
+            base = "stdin.log"
+        out_path = os.path.join(os.path.dirname(args.spike_log) or ".", "compare_" + base)
+    with open(out_path, "w") as fo:
+        fo.write("\n".join(report) + "\n")
+    sys.stderr.write("[compare_spike_log] result written to %s\n" % out_path)
     sys.exit(0 if ok else 1)
 
 

@@ -66,8 +66,13 @@ def canon(rec, opts):
     """Canonical comparable string for one commit record."""
     priv, pc, insn, rest = rec
     r = " ".join(rest.split()).lower()        # collapse whitespace
-    # Normalize register spacing so Spike's "x 6"/"f 3" matches our "x6"/"f3".
-    r = re.sub(r'\b([xf])\s+(\d)', r'\1\2', r)
+    # Normalize register spacing so Spike's "x 6"/"f 3"/"v 5" matches "x6"/"f3"/"v5".
+    r = re.sub(r'\b([xfv])\s+(\d)', r'\1\2', r)
+    if opts.no_vreg:    # ignore vector register DATA: "v3 0x<hex>" -> "v3"
+        r = re.sub(r'(\bv\d+)\s+0x[0-9a-f]+', r'\1', r)
+    if opts.no_vec:     # ignore all vector tokens: the "e.. m.. l.." summary + v regs
+        r = re.sub(r'\be\d+\s+mf?\d+\s+l\d+', '', r)
+        r = " ".join(re.sub(r'\bv\d+(?:\s+0x[0-9a-f]+)?', '', r).split())
     if opts.ignore_csr_name:                  # c769_misa -> c769
         r = re.sub(r'(\bc\d+)_\w+', r'\1', r)
     if opts.ignore_csr_val:                    # WARL CSRs: blank the value
@@ -111,6 +116,10 @@ def main():
     ap.add_argument("--ignore-csr-name", action="store_true", help="compare CSR by number only (drop _name)")
     ap.add_argument("--no-csr", action="store_true", help="ignore CSR write tokens entirely")
     ap.add_argument("--no-mem", action="store_true", help="ignore mem tokens entirely")
+    ap.add_argument("--no-vreg", action="store_true",
+                    help="ignore vector register DATA (the 0x<hex> after v<vd>); keep v<vd> + e/m/l token")
+    ap.add_argument("--no-vec", action="store_true",
+                    help="ignore ALL vector tokens (e<sew> <lmul> l<vl> v<vd> 0x..)")
     args = ap.parse_args()
     start_pc = int(args.start_pc, 16) if args.start_pc else None
     ram_base = None if args.no_ram_filter else int(args.ram_base, 16)

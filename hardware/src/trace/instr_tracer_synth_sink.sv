@@ -21,24 +21,33 @@
 
 `ifndef SYNTHESIS
 // pragma translate_off
+// (ara_pkg referenced fully-qualified -- ara_pkg::shuffle_index / VLEN / VLENB --
+//  to avoid a VLEN/VLENB name clash with instr_tracer_synth_pkg under dual import.)
 module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
   parameter logic [63:0] HartId     = 64'h0,
+  // Number of Ara lanes -- needed to de-shuffle a vector register (shuffle_index).
+  parameter int unsigned NrLanes    = 4,
   // Set to 1 to also dump the raw packed records as hex (trace_hart_<id>.pkt.hex),
   // e.g. to exercise the off-chip scripts/spike_trace_decode.py flow.
   parameter bit          EmitPktHex = 1'b0
 ) (
-  input  logic             clk_i,
-  input  logic             rst_ni,
-  input  logic             trace_valid_i,
-  input  commit_log_beat_t trace_beat_i,
-  output logic             trace_ready_o,
-  input  logic             overflow_i
+  input  logic                clk_i,
+  input  logic                rst_ni,
+  input  logic                trace_valid_i,
+  input  commit_log_beat_t    trace_beat_i,
+  output logic                trace_ready_o,
+  input  logic                overflow_i,
+  // ---- vector (RVV) commit port (optional; tie *_i low if unused) ----
+  input  logic                vec_trace_valid_i,
+  input  vec_commit_log_pkt_t vec_trace_beat_i,
+  output logic                vec_trace_ready_o,
+  input  logic                vec_overflow_i
 );
 
-  int unsigned f_log, f_hex;
-  string       fn_log, fn_hex;
+  int unsigned f_log, f_hex, f_vhex;
+  string       fn_log, fn_hex, fn_vhex;
 
-  // Always ready to drain the trace in simulation.
+  // Always ready to drain the scalar trace in simulation.
   assign trace_ready_o = 1'b1;
 
   // ---------------------------------------------------------------------------
@@ -130,6 +139,67 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
     return s;
   endfunction
 
+  // ---------------------------------------------------------------------------
+  // LMUL token, matching Spike: "m"<lmul> for LMUL >= 1, "mf"<1/lmul> for < 1.
+  // ---------------------------------------------------------------------------
+  function automatic string lmul_str(logic [2:0] vlmul);
+    unique case (vlmul)
+      3'b000:  lmul_str = "m1";
+      3'b001:  lmul_str = "m2";
+      3'b010:  lmul_str = "m4";
+      3'b011:  lmul_str = "m8";
+      3'b111:  lmul_str = "mf2";
+      3'b110:  lmul_str = "mf4";
+      3'b101:  lmul_str = "mf8";
+      default: lmul_str = "m1";          // LMUL_RSVD
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Format one vector commit record into a Spike commit-log line, reproducing
+  // riscv-isa-sim execute.cc::commit_log_print_insn for a vector destination:
+  //
+  //   <priv> 0x<pc> (0x<insn>) e<sew> <m|mf><lmul> l<vl> v<vd> 0x<VLEN-bit hex>
+  //
+  // The captured `data` is in Ara's lane-shuffled byte order; de-shuffle it with
+  // ara_pkg::shuffle_index (the DUT's own function) so the bytes match exactly.
+  // ---------------------------------------------------------------------------
+  function automatic string spike_vec_str(vec_commit_log_pkt_t p);
+    string                    s;
+    logic [63:0]              pc64;
+    int unsigned              sew_bits;
+    logic [ara_pkg::VLEN-1:0] arch;       // natural (architectural) byte order
+    pc64     = 64'(p.pc);
+    sew_bits = 8 << p.vsew;               // EW8->8, EW16->16, EW32->32, EW64->64
+
+    // de-shuffle: natural byte n lives at physical byte shuffle_index(n)
+    arch = '0;
+    for (int unsigned n = 0; n < ara_pkg::VLENB; n++) begin
+      automatic int unsigned ph = ara_pkg::shuffle_index(n, NrLanes, rvv_pkg::vew_e'(p.vsew));
+      arch[n*8 +: 8] = p.data[ph*8 +: 8];
+    end
+
+    // base: "<priv> 0x<pc> (0x<insn>)" then the vtype summary, then " v<vd> 0x.."
+    s = $sformatf("%d 0x%h (0x%h)", p.priv, pc64, p.instr);
+    s = {s, $sformatf(" e%0d %s l%0d", sew_bits, lmul_str(p.vlmul), p.vl)};
+    s = {s, $sformatf(" v%0d 0x%h", p.vd, arch)};
+    return s;
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // True when the scalar path should SUPPRESS this record's commit-log line
+  // because the vector path emits the full line instead (avoids a duplicate).
+  // Mirrors instr_tracer_synth_vec.writes_vreg(): pure OP-V arithmetic/mask
+  // (opcode 0x57, funct3 != OPCFG) always; vector unit-stride loads (opcode
+  // 0x07) only when no scalar register is written (we == 0; an FP load sets we).
+  // ---------------------------------------------------------------------------
+  function automatic logic vec_handled(commit_log_pkt_t p);
+    automatic logic [6:0] opcode = p.instr[6:0];
+    automatic logic [2:0] funct3 = p.instr[14:12];
+    vec_handled = (opcode == 7'b1010111 && funct3 != 3'b111)
+                | (opcode == 7'b0000111 && ~p.we);
+  endfunction
+
   initial begin
     // Distinct name so it does NOT clobber the original tracer's
     // trace_hart_<id>_commit.log under QuestaSim (both run there); diff the two.
@@ -141,8 +211,26 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
       $sformat(fn_hex, "trace_hart_%0d.pkt.hex", HartId);
       f_hex = $fopen(fn_hex, "w");
       if (f_hex == 0) $fatal(1, "[TRACE-SINK] cannot open %s", fn_hex);
+      $sformat(fn_vhex, "trace_hart_%0d.vpkt.hex", HartId);
+      f_vhex = $fopen(fn_vhex, "w");
+      if (f_vhex == 0) $fatal(1, "[TRACE-SINK] cannot open %s", fn_vhex);
     end
   end
+
+  // Pop the vector FIFO EXACTLY when the scalar stream drains a vector-handled
+  // instruction, so the vector line lands in program order in the single log.
+  // Both streams are in commit order, so the k-th vector-handled scalar beat
+  // lines up with the k-th vector record.
+  logic vec_pop;
+  always_comb begin
+    vec_pop = 1'b0;
+    if (trace_valid_i && trace_ready_o)
+      for (int unsigned p = 0; p < NrCommitPorts; p++)
+        if (trace_beat_i.valid[p] && trace_beat_i.pkt[p].retired
+            && !trace_beat_i.pkt[p].debug && vec_handled(trace_beat_i.pkt[p]))
+          vec_pop = 1'b1;
+  end
+  assign vec_trace_ready_o = vec_pop;
 
   // Drain one beat per accepted handshake; emit port 0 before port 1 so the
   // file is in program order.
@@ -154,20 +242,33 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
           // instruction, gated only by !debug_mode (instr_tracer.sv:116,195) --
           // NOT by exceptions. Key on `retired` (= commit_ack), never on ex_valid.
           if (trace_beat_i.pkt[p].retired && !trace_beat_i.pkt[p].debug) begin
-            $fwrite(f_log, "%s\n", spike_commit_str(trace_beat_i.pkt[p]));
+            if (vec_handled(trace_beat_i.pkt[p])) begin
+              // The vector path emits the full line (with e/m/l + v<vd> tokens),
+              // in place of the scalar line, in program order.
+              if (vec_trace_valid_i && !vec_trace_beat_i.debug)
+                $fwrite(f_log, "%s\n", spike_vec_str(vec_trace_beat_i));
+            end else begin
+              $fwrite(f_log, "%s\n", spike_commit_str(trace_beat_i.pkt[p]));
+            end
           end
           if (EmitPktHex) $fwrite(f_hex, "%0h\n", trace_beat_i.pkt[p]);
         end
       end
     end
+    if (EmitPktHex && vec_pop && vec_trace_valid_i)
+      $fwrite(f_vhex, "%0h\n", vec_trace_beat_i);
     if (rst_ni && overflow_i) begin
       $warning("[TRACE-SINK] trace FIFO overflow: a commit beat was dropped");
+    end
+    if (rst_ni && vec_overflow_i) begin
+      $warning("[TRACE-SINK] vector trace FIFO overflow: a vector record was dropped");
     end
   end
 
   final begin
     if (f_log) $fclose(f_log);
     if (EmitPktHex && f_hex) $fclose(f_hex);
+    if (EmitPktHex && f_vhex) $fclose(f_vhex);
   end
 
 endmodule : instr_tracer_synth_sink

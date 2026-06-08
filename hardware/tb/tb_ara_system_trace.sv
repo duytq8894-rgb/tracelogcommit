@@ -212,18 +212,87 @@ module tb_ara_system_trace import ara_pkg::*; import instr_tracer_synth_pkg::*; 
     .overflow_o     ( trace_overflow )
   );
 
+  // ---------------------------------------------------------------------------
+  // (1b) The VECTOR (RVV) tracer. Vector instructions retire in CVA6 (fu=ACCEL)
+  //      but their destination data lives in Ara's VRF, striped across the lanes.
+  //      We tap, via hierarchical references: the CVA6 commit signals (i_ariane.*),
+  //      Ara's current vsew/vlmul/vl (i_ara.i_dispatcher.*), and every lane's VRF
+  //      write port (i_ara.gen_lanes[L].i_lane.vrf_*). NOTE: the hierarchical
+  //      paths and the in-bank-address assumption (AddrInBank=1) are config-
+  //      dependent -- validate against your Ara build (see VECTOR.md).
+  // ---------------------------------------------------------------------------
+  localparam int unsigned NrBanks      = ara_pkg::NrVRFBanksPerLane;            // 8
+  localparam int unsigned WordsPerLane = 32 * (ara_pkg::VLEN / (64 * NrLanes));
+  localparam int unsigned GwW          = (WordsPerLane > 1) ? $clog2(WordsPerLane) : 1;
+
+  logic [NrLanes-1:0][NrBanks-1:0]          vrf_wen_p;
+  logic [NrLanes-1:0][NrBanks-1:0][GwW-1:0] vrf_addr_p;   // in-bank word index
+  logic [NrLanes-1:0][NrBanks-1:0][63:0]    vrf_wdata_p;
+  logic [NrLanes-1:0][NrBanks-1:0][7:0]     vrf_be_p;
+
+  for (genvar L = 0; L < NrLanes; L++) begin : gen_vrf_tap
+    assign vrf_wen_p[L] = i_dut.i_ara.gen_lanes[L].i_lane.vrf_wen;
+    for (genvar b = 0; b < NrBanks; b++) begin : gen_vrf_tap_bank
+      assign vrf_addr_p [L][b] = i_dut.i_ara.gen_lanes[L].i_lane.vrf_addr[b][GwW-1:0];
+      assign vrf_wdata_p[L][b] = i_dut.i_ara.gen_lanes[L].i_lane.vrf_wdata[b];
+      assign vrf_be_p   [L][b] = i_dut.i_ara.gen_lanes[L].i_lane.vrf_be[b];
+    end
+  end
+
+  // Ara's current vtype / vl (held in the dispatcher).
+  logic [2:0]            vsew_p, vlmul_p;
+  logic [VlW-1:0]        vl_p;
+  assign vsew_p  = i_dut.i_ara.i_dispatcher.vtype_q.vsew;
+  assign vlmul_p = i_dut.i_ara.i_dispatcher.vtype_q.vlmul;
+  assign vl_p    = i_dut.i_ara.i_dispatcher.vl_q;
+
+  vec_commit_log_pkt_t vec_beat;
+  logic                vec_valid, vec_ready, vec_overflow;
+
+  instr_tracer_synth_vec #(
+    .NrLanes   ( NrLanes ),
+    .FifoDepth ( 4       )
+  ) i_vec_tracer (
+    .clk_i          ( clk   ),
+    .rst_ni         ( rst_n ),
+    .flush_i        ( 1'b0  ),
+    .testmode_i     ( 1'b0  ),
+    .commit_instr_i ( i_dut.i_ariane.commit_instr_id_commit ),
+    .commit_ack_i   ( i_dut.i_ariane.commit_ack             ),
+    .instr_word_i   ( { i_dut.i_ariane.commit_instr_id_commit[1].ex.tval[31:0],
+                        i_dut.i_ariane.commit_instr_id_commit[0].ex.tval[31:0] } ),
+    .priv_lvl_i     ( i_dut.i_ariane.priv_lvl   ),
+    .debug_mode_i   ( i_dut.i_ariane.debug_mode ),
+    .vsew_i         ( vsew_p   ),
+    .vlmul_i        ( vlmul_p  ),
+    .vl_i           ( vl_p     ),
+    .vrf_wen_i      ( vrf_wen_p   ),
+    .vrf_addr_i     ( vrf_addr_p  ),
+    .vrf_wdata_i    ( vrf_wdata_p ),
+    .vrf_be_i       ( vrf_be_p    ),
+    .vec_trace_valid_o ( vec_valid    ),
+    .vec_trace_beat_o  ( vec_beat     ),
+    .vec_trace_ready_i ( vec_ready    ),
+    .overflow_o        ( vec_overflow )
+  );
+
   // (2) consume + write the log file (simulation only).
   //     Produces: trace_hart_0_commit.synth.log in the run directory.
   instr_tracer_synth_sink #(
-    .HartId     ( 64'h0 ),
-    .EmitPktHex ( 1'b0  )    // set 1'b1 to also dump trace_hart_0.pkt.hex
+    .HartId     ( 64'h0   ),
+    .NrLanes    ( NrLanes ),
+    .EmitPktHex ( 1'b0    )    // set 1'b1 to also dump trace_hart_0.pkt.hex / .vpkt.hex
   ) i_sink (
-    .clk_i         ( clk            ),
-    .rst_ni        ( rst_n          ),
-    .trace_valid_i ( trace_valid    ),
-    .trace_beat_i  ( trace_beat     ),
-    .trace_ready_o ( trace_ready    ),
-    .overflow_i    ( trace_overflow )
+    .clk_i             ( clk            ),
+    .rst_ni            ( rst_n          ),
+    .trace_valid_i     ( trace_valid    ),
+    .trace_beat_i      ( trace_beat     ),
+    .trace_ready_o     ( trace_ready    ),
+    .overflow_i        ( trace_overflow ),
+    .vec_trace_valid_i ( vec_valid      ),
+    .vec_trace_beat_i  ( vec_beat       ),
+    .vec_trace_ready_o ( vec_ready      ),
+    .vec_overflow_i    ( vec_overflow   )
   );
 
   // ---------------------------------------------------------------------------

@@ -76,4 +76,38 @@ package instr_tracer_synth_pkg;
   localparam int unsigned PktWidth  = $bits(commit_log_pkt_t);
   localparam int unsigned BeatWidth = $bits(commit_log_beat_t);
 
+  // ===========================================================================
+  // Vector (RVV) commit-log record  --  feature: log Ara vector instructions in
+  // Spike commit-log format.  Spike (riscv-isa-sim execute.cc) prints, for a
+  // vector instruction that writes a vector register:
+  //
+  //   <priv> 0x<pc> (0x<insn>) e<sew> <m|mf><lmul> l<vl> v<vd> 0x<VLEN-bit hex>
+  //
+  // The scalar half retires in CVA6 (fu == ACCEL); the destination data lives in
+  // Ara's VRF, striped across the lanes (see ara_pkg shuffle_index). We capture
+  // a *raw* (lane-shuffled) snapshot of v[vd] here, and the off-chip / sim sink
+  // de-shuffles it with ara_pkg::shuffle_index before formatting, so the bytes
+  // match the DUT by construction.
+  // ---------------------------------------------------------------------------
+  // NB: reference ara_pkg::VLEN fully-qualified so this package does NOT export a
+  // `VLEN`/`VLENB` symbol (that would collide with ara_pkg under a dual `import *`).
+  localparam int unsigned VlW = $clog2(ara_pkg::VLEN + 1);  // vl is an element count (<= MAXVL = VLEN)
+
+  typedef struct packed {
+    logic                     valid;  // a vector-register write committed this cycle
+    logic                     first;  // first destination vreg of the instruction (emit the e/m/l token)
+    logic                     last;   // last destination vreg of the instruction (flush the commit-log line)
+    logic [1:0]               priv;   // privilege level (M=3,S=1,U=0)
+    logic                     debug;  // core in debug mode (suppresses the line, like the scalar path)
+    logic [XLEN-1:0]          pc;     // program counter of the vector instruction
+    logic [31:0]              instr;  // raw instruction word
+    logic [2:0]               vsew;   // rvv_pkg::vew_e  (EW8=0,EW16=1,EW32=2,EW64=3) -> e8/e16/e32/e64
+    logic [2:0]               vlmul;  // rvv_pkg::vlmul_e -> m1/m2/m4/m8 / mf2/mf4/mf8
+    logic [VlW-1:0]           vl;     // vector length (element count) in effect
+    logic [4:0]               vd;     // this record's destination vector register
+    logic [ara_pkg::VLEN-1:0] data;   // RAW (lane-shuffled) contents of v[vd]; sink de-shuffles by vsew
+  } vec_commit_log_pkt_t;
+
+  localparam int unsigned VecPktWidth = $bits(vec_commit_log_pkt_t);
+
 endpackage : instr_tracer_synth_pkg

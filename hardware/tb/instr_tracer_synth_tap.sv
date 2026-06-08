@@ -84,13 +84,20 @@ module instr_tracer_synth_tap import ariane_pkg::*; import instr_tracer_synth_pk
   );
 
   // The simulation sink: always ready, dumps packed hex records to a file.
+  // This `ariane`-scoped tap handles the SCALAR path only; vector (RVV) logging
+  // is system-level (needs Ara) and is wired in tb_ara_system_trace.sv, so the
+  // vector port is tied off here.
   instr_tracer_synth_sink #(.HartId(HartId)) i_sink (
     .clk_i,
     .rst_ni,
     .trace_valid_i (valid),
     .trace_beat_i  (beat),
     .trace_ready_o (ready),
-    .overflow_i    (overflow)
+    .overflow_i    (overflow),
+    .vec_trace_valid_i (1'b0),
+    .vec_trace_beat_i  ('0),
+    .vec_trace_ready_o (/* open */),
+    .vec_overflow_i    (1'b0)
   );
 
 endmodule : instr_tracer_synth_tap

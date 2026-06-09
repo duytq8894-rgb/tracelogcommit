@@ -49,8 +49,10 @@ instr_tracer_synth #(.FifoDepth(32)) i_tracer (
 );
 
 // ---------------------------------------------------------------------------
-// (1b) SYNTHESIZABLE: tracer VECTOR (RVV)  -- xuất dòng Spike:
-//        <priv> 0x<pc> (0x<insn>) e<sew> <m|mf><lmul> l<vl> v<vd> 0x<VLEN-hex>
+// (1b) SYNTHESIZABLE: tracer VECTOR (RVV)  -- xuất dòng Spike (theo trace_vector.md):
+//        <priv> 0x<pc> (0x<insn>) v<vd> 0x<VLEN-hex>
+//   (KHÔNG in tóm tắt e<sew> <m|mf><lmul> l<vl> — bản Spike đích chỉ in token v<vd>;
+//    vsew vẫn dùng nội bộ để de-shuffle. Xem VECTOR.md §1.)
 //   Lệnh vector retire ở CVA6 (fu=ACCEL) nhưng dữ liệu vd nằm trong VRF của Ara,
 //   trải (shuffle) qua các lane. Ta tap 3 nguồn:
 //     - commit  : i_dut.i_ariane.*                         (pc/instr/priv/debug)

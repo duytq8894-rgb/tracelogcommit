@@ -17,11 +17,13 @@
 // COVERAGE (v1) — validate in simulation; see VECTOR.md:
 //   * single-register destinations at EEW = vtype.vsew: OP-V arithmetic / mask
 //     ops and unit-stride vector loads. (first = last = 1.)
+//   * Reductions/moves writing a SCALAR (vmv.x.s, vcpop.m, vfirst.m, vfmv.f.s)
+//     are correctly EXCLUDED here (writes_vreg) and emitted by the scalar path
+//     as x/f<rd> (trace_vector.md §3.10).
 //   * NOT yet expanded: LMUL>1 (EMUL>1, multiple v<vd> per line), widening
-//     (2*SEW dest), reductions/moves writing a SCALAR (vmv.x.s, vcpop, vfirst,
-//     vfmv.f.s — handled by the scalar path, but mis-decoded here as a vreg
-//     write), and the exact vtype/vl of an instruction still in flight (we read
-//     Ara's *current* CSRs, like the scalar shadow regfile reads "most recent").
+//     (2*SEW dest), mask-result EEW (de-shuffle uses vtype.vsew), and the exact
+//     vtype/vl of an instruction still in flight (we read Ara's *current* CSRs,
+//     like the scalar shadow regfile reads "most recent").
 
 // (ara_pkg referenced fully-qualified to avoid a VLEN name clash with
 //  instr_tracer_synth_pkg under dual import.)
@@ -84,14 +86,23 @@ module instr_tracer_synth_vec import ariane_pkg::*; import instr_tracer_synth_pk
   );
 
   // ---- decode: does this committing ACCEL instruction write a vector reg? ---
-  // OP-V (0x57) with funct3 != OPCFG(0b111) writes a vector reg; vector unit-
-  // stride loads use the LOAD-FP major opcode (0x07). Stores (0x27) and vset
-  // (0x57/funct3==111) write no vreg.
+  // OP-V (0x57) writes a vector reg EXCEPT:
+  //   * OPCFG (funct3==111): vset* writes x<rd> + vtype/vl CSRs (scalar path).
+  //   * VWXUNARY0/VWFUNARY0 (funct6==010000 with funct3 OPMVV=010 / OPFVV=001):
+  //       vmv.x.s / vcpop.m / vfirst.m / vfmv.f.s write x/f<rd>, NOT a vreg, so
+  //       they must go down the scalar path (trace_vector.md §3.10). funct6==010000
+  //       with OPMVX=110 / OPFVF=101 (vmv.s.x / vfmv.s.f) DO write a vreg -- kept.
+  // Vector unit-stride loads use the LOAD-FP major opcode (0x07). Stores (0x27)
+  // write no vreg. NB: this decode mirrors vec_handled() in the sink -- keep both
+  // in sync.
   function automatic logic writes_vreg(logic [31:0] insn);
     automatic logic [6:0] opcode = insn[6:0];
     automatic logic [2:0] funct3 = insn[14:12];
-    writes_vreg = (opcode == 7'b1010111 && funct3 != 3'b111)   // OP-V arithmetic / mask
-                | (opcode == 7'b0000111);                       // vector load
+    automatic logic [5:0] funct6 = insn[31:26];
+    automatic logic       opv_scalar_dst = (funct6 == 6'b010000)
+                                         && (funct3 == 3'b010 || funct3 == 3'b001);
+    writes_vreg = (opcode == 7'b1010111 && funct3 != 3'b111 && !opv_scalar_dst) // OP-V vreg dst
+                | (opcode == 7'b0000111);                                       // vector load
   endfunction
 
   // ---- build one vector record from the current commit signals --------------

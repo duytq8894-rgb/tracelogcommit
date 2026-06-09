@@ -78,10 +78,14 @@ package instr_tracer_synth_pkg;
 
   // ===========================================================================
   // Vector (RVV) commit-log record  --  feature: log Ara vector instructions in
-  // Spike commit-log format.  Spike (riscv-isa-sim execute.cc) prints, for a
-  // vector instruction that writes a vector register:
+  // Spike commit-log format.  Per hardware/src/trace/trace_vector.md, the sink
+  // prints, for a vector instruction that writes a vector register:
   //
-  //   <priv> 0x<pc> (0x<insn>) e<sew> <m|mf><lmul> l<vl> v<vd> 0x<VLEN-bit hex>
+  //   <priv> 0x<pc> (0x<insn>) v<vd> 0x<VLEN-bit hex>
+  //
+  // (vsew/vlmul/vl are still captured below -- vsew drives the de-shuffle EEW and
+  //  all three remain available in the raw packet dump -- but the targeted Spike
+  //  version prints only the bare v<vd> token, with no e<sew>/<lmul>/l<vl> summary.)
   //
   // The scalar half retires in CVA6 (fu == ACCEL); the destination data lives in
   // Ara's VRF, striped across the lanes (see ara_pkg shuffle_index). We capture

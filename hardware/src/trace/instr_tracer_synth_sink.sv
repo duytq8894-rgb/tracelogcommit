@@ -140,37 +140,32 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
   endfunction
 
   // ---------------------------------------------------------------------------
-  // LMUL token, matching Spike: "m"<lmul> for LMUL >= 1, "mf"<1/lmul> for < 1.
-  // ---------------------------------------------------------------------------
-  function automatic string lmul_str(logic [2:0] vlmul);
-    unique case (vlmul)
-      3'b000:  lmul_str = "m1";
-      3'b001:  lmul_str = "m2";
-      3'b010:  lmul_str = "m4";
-      3'b011:  lmul_str = "m8";
-      3'b111:  lmul_str = "mf2";
-      3'b110:  lmul_str = "mf4";
-      3'b101:  lmul_str = "mf8";
-      default: lmul_str = "m1";          // LMUL_RSVD
-    endcase
-  endfunction
-
-  // ---------------------------------------------------------------------------
-  // Format one vector commit record into a Spike commit-log line, reproducing
-  // riscv-isa-sim execute.cc::commit_log_print_insn for a vector destination:
+  // Format one vector commit record into a Spike commit-log line, per
+  // hardware/src/trace/trace_vector.md (§1 header, §2.1 element order, §3.2):
   //
-  //   <priv> 0x<pc> (0x<insn>) e<sew> <m|mf><lmul> l<vl> v<vd> 0x<VLEN-bit hex>
+  //   <priv> 0x<pc> (0x<insn>) v<vd> 0x<VLEN-bit hex>
   //
-  // The captured `data` is in Ara's lane-shuffled byte order; de-shuffle it with
-  // ara_pkg::shuffle_index (the DUT's own function) so the bytes match exactly.
+  // Element order (§2.1): the FULL VLEN register is printed (NO vl/vstart/vta/vma
+  // masking), high element to the LEFT (MSB), element 0 to the RIGHT (LSB). That
+  // ordering falls out naturally once the captured `data` -- which is in Ara's
+  // lane-shuffled byte order -- is de-shuffled to architectural byte order with
+  // ara_pkg::shuffle_index (the DUT's own function) and printed MSB-first by %h.
+  //
+  // The e<sew>/<m|mf><lmul>/l<vl> vtype summary is intentionally NOT printed: the
+  // targeted Spike commit-log version (see the trace_vector.md header note on
+  // per-version `v<n>` format) emits only the bare `v<vd> 0x<hex>` token. `vsew`
+  // is still used internally to drive the de-shuffle EEW.
+  //
+  // No "core <id>:" prefix is emitted here -- the whole synth log uses the
+  // prefix-less CVA6 form, matching the scalar spike_commit_str(); the
+  // "core N:" prefix and the optional disasm of full Spike output are reconciled
+  // by compare_spike_log.py at diff time.
   // ---------------------------------------------------------------------------
   function automatic string spike_vec_str(vec_commit_log_pkt_t p);
     string                    s;
     logic [63:0]              pc64;
-    int unsigned              sew_bits;
     logic [ara_pkg::VLEN-1:0] arch;       // natural (architectural) byte order
-    pc64     = 64'(p.pc);
-    sew_bits = 8 << p.vsew;               // EW8->8, EW16->16, EW32->32, EW64->64
+    pc64 = 64'(p.pc);
 
     // de-shuffle: natural byte n lives at physical byte shuffle_index(n)
     arch = '0;
@@ -179,24 +174,32 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
       arch[n*8 +: 8] = p.data[ph*8 +: 8];
     end
 
-    // base: "<priv> 0x<pc> (0x<insn>)" then the vtype summary, then " v<vd> 0x.."
+    // header: "<priv> 0x<pc> (0x<insn>)" then the single " v<vd> 0x.." writeback
     s = $sformatf("%d 0x%h (0x%h)", p.priv, pc64, p.instr);
-    s = {s, $sformatf(" e%0d %s l%0d", sew_bits, lmul_str(p.vlmul), p.vl)};
     s = {s, $sformatf(" v%0d 0x%h", p.vd, arch)};
     return s;
   endfunction
 
   // ---------------------------------------------------------------------------
   // True when the scalar path should SUPPRESS this record's commit-log line
-  // because the vector path emits the full line instead (avoids a duplicate).
-  // Mirrors instr_tracer_synth_vec.writes_vreg(): pure OP-V arithmetic/mask
-  // (opcode 0x57, funct3 != OPCFG) always; vector unit-stride loads (opcode
-  // 0x07) only when no scalar register is written (we == 0; an FP load sets we).
+  // because the vector path emits the `v<vd>` line instead (avoids a duplicate).
+  // Mirrors instr_tracer_synth_vec.writes_vreg(): OP-V (opcode 0x57) that writes
+  // a VECTOR register, plus vector unit-stride loads (opcode 0x07) that write no
+  // scalar register (we == 0; a scalar FP load sets we). OP-V is a vreg write
+  // EXCEPT:
+  //   * OPCFG (funct3==111): vset* -> writes x<rd> + vtype/vl CSRs (trace_vector.md §3.1)
+  //   * VWXUNARY0/VWFUNARY0 (funct6==010000, funct3 OPMVV=010 / OPFVV=001):
+  //       vmv.x.s / vcpop.m / vfirst.m / vfmv.f.s -> write x/f<rd> (§3.10).
+  //       (funct6==010000 with OPMVX=110 / OPFVF=101 is vmv.s.x / vfmv.s.f, which
+  //        DO write a vreg -- distinguished here by funct3, so they stay handled.)
   // ---------------------------------------------------------------------------
   function automatic logic vec_handled(commit_log_pkt_t p);
     automatic logic [6:0] opcode = p.instr[6:0];
     automatic logic [2:0] funct3 = p.instr[14:12];
-    vec_handled = (opcode == 7'b1010111 && funct3 != 3'b111)
+    automatic logic [5:0] funct6 = p.instr[31:26];
+    automatic logic       opv_scalar_dst = (funct6 == 6'b010000)
+                                         && (funct3 == 3'b010 || funct3 == 3'b001);
+    vec_handled = (opcode == 7'b1010111 && funct3 != 3'b111 && !opv_scalar_dst)
                 | (opcode == 7'b0000111 && ~p.we);
   endfunction
 

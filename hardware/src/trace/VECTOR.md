@@ -16,19 +16,25 @@ decoder) — the same on-chip-capture / off-chip-format split the scalar path us
 
 ## 1. The Spike vector format we reproduce
 
-From `toolchain/riscv-isa-sim/riscv/execute.cc` (`commit_log_print_insn`): when an
-instruction writes a vector register, Spike prints a one-time vtype token then one
-` v<vd> 0x…` per written register:
+Per [`trace_vector.md`](trace_vector.md) (§1, §2.1, §3.2) — the spec for the
+targeted Spike commit-log version — when an instruction writes a vector register
+the line is the standard header followed by one ` v<vd> 0x…` per written register:
 
 ```
-<priv> 0x<pc> (0x<insn>) e<sew> <m|mf><lmul> l<vl> v<vd> 0x<VLEN-bit hex>
+<priv> 0x<pc> (0x<insn>) v<vd> 0x<VLEN-bit hex>
 ```
 
-- `e<sew>`   — element width in **bits** (`8 << vsew`): `e8/e16/e32/e64`.
-- `<m|mf><n>`— LMUL: `m1/m2/m4/m8` for LMUL ≥ 1, `mf2/mf4/mf8` for fractional.
-- `l<vl>`    — vector length (**element count**).
-- `v<vd> 0x…`— the full `VLEN`-bit register, printed as 64-bit words **high element
-  first**; the bytes are the register's *architectural* (natural) order.
+- `v<vd> 0x…`— the full `VLEN`-bit register (no `vl`/`vstart`/`vta`/`vma` masking),
+  high element to the **left** (MSB), element 0 to the **right** (LSB); bytes are
+  in the register's *architectural* (natural) order.
+
+> **Version note.** The `v<n>` print format differs between Spike builds (older
+> per-element `v8 : [3]: 0x.. [2]: 0x..` vs. the newer single hex string; and some
+> builds additionally prefix an `e<sew> <m|mf><lmul> l<vl>` vtype summary). This
+> tracer targets the bare-hex-string form **without** the vtype summary, matching
+> `trace_vector.md`. If your Spike emits the summary, re-add it in
+> `instr_tracer_synth_sink.sv::spike_vec_str` (the `vsew/vlmul/vl` fields are still
+> captured) or diff with `compare_spike_log.py --no-vec`.
 
 Mem (`mem 0x…`) and CSR (`c<addr>_…`) tokens reuse the scalar path.
 
@@ -82,28 +88,35 @@ order, so the k-th vector-handled scalar beat aligns with the k-th vector record
 — OP-V arithmetic / mask ops (opcode `0x57`, funct3 ≠ OPCFG) and unit-stride vector
 loads (opcode `0x07`), `LMUL ≤ 1`.
 
+**Handled — was a TODO, now done:**
+- **Reductions/moves to a SCALAR** (`vmv.x.s`, `vcpop.m`, `vfirst.m`, `vfmv.f.s`) —
+  opcode `0x57`, funct3 ≠ OPCFG but `VWXUNARY0/VWFUNARY0` (funct6 `010000`, funct3
+  `OPMVV`/`OPFVV`) write `x`/`f`, not `vd`. `writes_vreg()`/`vec_handled()` now
+  exclude them, so they emit the correct `x<rd>`/`f<rd>` scalar line (`trace_vector.md`
+  §3.10). `vmv.s.x`/`vfmv.s.f` (same funct6, `OPMVX`/`OPFVF`) still write a vreg and
+  stay on the vector path.
+
 **Not yet handled — documented TODOs:**
 1. **LMUL > 1 (EMUL > 1)** — Spike prints `v<vd>, v<vd+1>, …` on one line. The record
    has `first`/`last` flags for this, but the capture currently emits one register
    (`first=last=1`). Needs a small per-instruction loop pushing `emul` records.
 2. **Widening dest (2·SEW)** and **mask-result EEW** — the de-shuffle uses `vtype.vsew`;
-   widening/mask writes use a different EEW, so those bytes will be mis-ordered.
-3. **Reductions/moves to a SCALAR** (`vmv.x.s`, `vcpop.m`, `vfirst.m`, `vfmv.f.s`) —
-   these are opcode `0x57`, funct3 ≠ OPCFG but write `x`/`f`, not `vd`. They are
-   currently mis-decoded as a vreg write (would emit a spurious `v…` line and the
-   scalar path would suppress the real `x<rd>` line). Exclude `VWXUNARY0/VWFUNARY0`.
-4. **Vector stores** (opcode `0x27`) — not emitted by the vector path; the scalar
-   path prints a bare line (no `e/m/l`, no `mem`). Needs Ara's store address/data.
-5. **vset\*** — writes `x<rd>` + the `vl`/`vtype` CSRs. The scalar path prints the
-   `x<rd>`; the `c…_vl`/`c…_vtype` tokens and the `e/m/l` summary are not added.
-6. **In-flight vtype/vl** — we read Ara's *current* `vtype_q/vl_q` (like the scalar
+   widening/mask writes use a different EEW, so those bytes will be mis-ordered
+   (affects e.g. the `vmseq`/`vmslt` mask result in `trace_vector.md` §3.13).
+3. **Vector stores** (opcode `0x27`) — not emitted by the vector path; the scalar
+   path prints a bare line (no `mem` tokens). `trace_vector.md` §3.5 wants one
+   `mem 0x<addr> 0x<value>` per element; that needs Ara's store address/data.
+4. **vset\*** — writes `x<rd>` + the `vl`/`vtype` CSRs. The scalar path prints the
+   `x<rd>` and the CSR tokens; matching `trace_vector.md` §3.1 (`c…_vtype`/`c…_vl`)
+   depends on those CSR writes being captured on the scalar commit pkt.
+5. **In-flight vtype/vl** — we read Ara's *current* `vtype_q/vl_q` (like the scalar
    shadow regfile reads "most recent"); if a later vset has updated them before this
-   instr commits, the token can differ. Per-instruction `pe_req.vtype/vl` (correlated
-   by id) would be exact.
-7. **Two vector instrs retiring in one cycle** — the capture takes the first port only.
-8. **Tail/`vta`** — Spike prints the whole `VLEN`; tail bytes match only if Ara's tail
+   instr commits, the de-shuffle EEW (`vsew`) can differ. Per-instruction
+   `pe_req.vtype/vl` (correlated by id) would be exact.
+6. **Two vector instrs retiring in one cycle** — the capture takes the first port only.
+7. **Tail/`vta`** — Spike prints the whole `VLEN`; tail bytes match only if Ara's tail
    policy matches Spike's.
-9. **`AddrInBank`** — assumes per-bank `vrf_addr` is the in-bank word index (current
+8. **`AddrInBank`** — assumes per-bank `vrf_addr` is the in-bank word index (current
    Ara). Flip the parameter if a future revision drives the global word.
 
 ## 6. Validation (do this first in simulation)

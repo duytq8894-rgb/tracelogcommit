@@ -54,6 +54,13 @@ module instr_tracer_synth_vec import ariane_pkg::*; import instr_tracer_synth_pk
   input  logic              [2:0]                       vlmul_i,        // rvv_pkg::vlmul_e
   input  logic              [VlW-1:0]                   vl_i,
 
+  // ----------------------- Ara vector FP flags (trace_vector.md §3.14) -----
+  // Per-lane fflags bus into the dispatcher (i_ara.i_dispatcher.fflags_ex_i /
+  // fflags_ex_valid_i). OR-reduced and captured at a vector-FP commit so the sink
+  // can append a " c1_fflags 0x<val>" token. Tie low if unused.
+  input  logic [NrLanes-1:0][4:0]                       fflags_i,
+  input  logic [NrLanes-1:0]                            fflags_valid_i,
+
   // ----------------------- Ara VRF write observation ----------------------
   input  logic [NrLanes-1:0][NrBanks-1:0]               vrf_wen_i,
   input  logic [NrLanes-1:0][NrBanks-1:0][GwW-1:0]      vrf_addr_i,
@@ -105,12 +112,26 @@ module instr_tracer_synth_vec import ariane_pkg::*; import instr_tracer_synth_pk
                 | (opcode == 7'b0000111);                                       // vector load
   endfunction
 
+  // ---- a committing OP-V instruction that is floating-point (OPFVV / OPFVF) --
+  // (funct3 OPFVV=001 / OPFVF=101). Only these can raise vector fflags, so the
+  // fflags token is gated on this to avoid attaching skewed flags to an int op.
+  function automatic logic is_vfp(logic [31:0] insn);
+    automatic logic [2:0] funct3 = insn[14:12];
+    is_vfp = (insn[6:0] == 7'b1010111) && (funct3 == 3'b001 || funct3 == 3'b101);
+  endfunction
+
   // ---- build one vector record from the current commit signals --------------
   vec_commit_log_pkt_t vbeat;
 
   always_comb begin
+    automatic logic [4:0] fflags_or  = '0;   // OR of all lanes' fflags this cycle
+    automatic logic       fflags_any = 1'b0;
     vbeat    = '0;
     snap_vid = '0;
+    for (int unsigned l = 0; l < NrLanes; l++) begin
+      fflags_or  |= fflags_i[l];
+      fflags_any |= fflags_valid_i[l];
+    end
     // pick the first retiring ACCEL port that writes a vector register
     for (int unsigned p = 0; p < NR_COMMIT_PORTS; p++) begin
       if (!vbeat.valid && commit_ack_i[p] && commit_instr_i[p].fu == ACCEL
@@ -127,6 +148,9 @@ module instr_tracer_synth_vec import ariane_pkg::*; import instr_tracer_synth_pk
         vbeat.vlmul    = vlmul_i;
         vbeat.vl       = vl_i;
         vbeat.vd       = instr_word_i[p][11:7];
+        // §3.14: attach OR-reduced fflags to a vector-FP destination write.
+        vbeat.fflags_valid = fflags_any && is_vfp(instr_word_i[p]);
+        vbeat.fflags       = fflags_or;
         vbeat.data     = snap_data;                  // raw lane-shuffled v[vd]
       end
     end

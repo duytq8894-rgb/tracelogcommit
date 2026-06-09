@@ -109,7 +109,11 @@ package instr_tracer_synth_pkg;
     logic [2:0]               vlmul;  // rvv_pkg::vlmul_e -> m1/m2/m4/m8 / mf2/mf4/mf8
     logic [VlW-1:0]           vl;     // vector length (element count) in effect
     logic [4:0]               vd;     // this record's destination vector register
-    logic [ara_pkg::VLEN-1:0] data;   // RAW (lane-shuffled) contents of v[vd]; sink de-shuffles by vsew
+    // Vector FP exception flags (trace_vector.md §3.14): OR of the per-lane fflags
+    // captured at commit. When fflags_valid, the sink appends " c1_fflags 0x<val>".
+    logic                     fflags_valid; // a vector FP op raised/updated fflags
+    logic [4:0]               fflags;       // {NV,DZ,OF,UF,NX}
+    logic [ara_pkg::VLEN-1:0] data;   // RAW (lane-shuffled) contents of v[vd]; sink de-shuffles by vsew/EW8
   } vec_commit_log_pkt_t;
 
   localparam int unsigned VecPktWidth = $bits(vec_commit_log_pkt_t);

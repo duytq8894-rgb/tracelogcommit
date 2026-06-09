@@ -578,6 +578,82 @@ box(s, 7.55, 6.35, 3.7, 0.75, "trace_hart_0_commit.synth.log",
 label(s, 1.8, 6.45, 5.6, "(+ trace_hart_0.pkt.hex when EmitPktHex=1, for the real-silicon binary path)",
       size=10.5, color=GREYTX, align=PP_ALIGN.LEFT, italic=True)
 
+# =========================================================================== SLIDE: SIGNAL TAP MAP
+s = slide()
+title_bar(s, "Where each signal is collected in the CVA6 pipeline",
+          "bind resolves these expressions in the `ariane` scope (instr_tracer_synth_bind.sv); "
+          "the vector taps reach into Ara at the ara_system level (tb_ara_system_trace.sv).")
+_PUR  = RGBColor(0xEE, 0xE6, 0xF7); _PURB = RGBColor(0x78, 0x46, 0xA0)
+_ORF  = RGBColor(0xFC, 0xEE, 0xDC); _ORB  = RGBColor(0xC4, 0x76, 0x1C)
+_STG  = RGBColor(0xEC, 0xEE, 0xF2)
+
+# ---- top: the CVA6 pipeline + Ara, with numbered tap points ----------------
+label(s, 0.40, 1.16, 9.0, "module  ariane   (CVA6 core)  —  bind scope",
+      size=12, color=NAVY, bold=True, align=PP_ALIGN.LEFT)
+_py, _ph2 = 1.55, 0.98
+box(s, 0.40, _py, 1.15, _ph2, "IF · PC", None, fill=_STG, border=NAVY, tsize=11.5)
+box(s, 1.70, _py, 1.15, _ph2, "ID",      None, fill=_STG, border=NAVY, tsize=11.5)
+box(s, 3.00, _py, 1.50, _ph2, "Issue",   None, fill=_STG, border=NAVY, tsize=11.5)
+box(s, 4.65, _py, 2.00, _ph2, "EX",
+    ["ALU · MUL · FPU", "lsu_i  ·  csr_regfile"], fill=SYNTH, border=SYNTH_B, tsize=12.5, bsize=8.5, mono_body=True)
+box(s, 6.80, _py, 2.45, _ph2, "Commit stage",
+    ["commit_ack · exception_o"], fill=SYNTH, border=SYNTH_B, tsize=12.5, bsize=8.5, mono_body=True)
+box(s, 9.75, _py, 3.20, _ph2, "Ara vector unit  (i_ara)",
+    ["i_dispatcher · gen_lanes[L].i_lane"], fill=GOLD, border=GOLD_B, tsize=12.5, bsize=8.5, mono_body=True)
+# pipeline flow + accelerator dispatch
+for _x1, _x2 in [(1.55, 1.70), (2.85, 3.00), (4.50, 4.65), (6.65, 6.80)]:
+    arrow(s, _x1, _py + _ph2 / 2, _x2, _py + _ph2 / 2, color=GREYTX, width=1.8)
+arrow(s, 9.25, _py + _ph2 / 2, 9.75, _py + _ph2 / 2, color=GOLD_B, width=2.2)
+label(s, 9.00, 1.30, 1.0, "fu=ACCEL", size=8, color=GOLD_B, bold=True, align=PP_ALIGN.LEFT)
+# numbered tap badges on the stage each group observes
+badge(s, 4.70, 1.62, 2, color=_PURB,  d=0.34)   # CSR write   -> EX (csr_regfile)
+badge(s, 6.22, 1.62, 3, color=_ORB,   d=0.34)   # LSU mem     -> EX (lsu_i)
+badge(s, 6.86, 1.62, 1, color=BLUE,   d=0.34)   # identity/result/exception -> Commit
+badge(s, 9.80, 1.62, 4, color=GOLD_B, d=0.34)   # vector data -> Ara
+
+# ---- bottom: one callout per tap point, exact hierarchical expressions ------
+_cy, _ch = 3.55, 3.18
+box(s, 0.35, _cy, 3.05, _ch, "①  COMMIT STAGE",
+    ["commit_instr_id_commit → pc·instr",
+     "  [p].ex.tval[31:0] → instr word",
+     "commit_ack → retired",
+     "waddr/wdata_commit_id → rd·wdata",
+     "we_gpr/we_fpr_commit_id → we·rd_fpr",
+     "priv_lvl · debug_mode → priv·debug",
+     "commit_stage_i.exception_o → trap"],
+    fill=SYNTH, border=SYNTH_B, tsize=12, bsize=8.5, mono_body=True, align=PP_ALIGN.LEFT)
+box(s, 3.50, _cy, 3.05, _ch, "②  CSR WRITE   “c<a>_<n> 0x..”",
+    ["csr_commit_commit_ex → pulse",
+     "csr_op_commit_csr → W/S/C",
+     "csr_addr_ex_csr → csr_addr",
+     "csr_wdata_commit_csr → operand",
+     "csr_rdata_csr_commit → old val",
+     "",
+     "pre-WARL → --ignore-csr-val"],
+    fill=_PUR, border=_PURB, tsize=11, bsize=8.5, mono_body=True, align=PP_ALIGN.LEFT)
+box(s, 6.65, _cy, 3.05, _ch, "③  LSU MEM   “mem 0x.. 0x..”",
+    ["ex_stage_i.lsu_i :",
+     "store_buffer_i.valid/paddr/",
+     "   data/data_size_i",
+     "load_unit.req_port_o.tag_valid/",
+     "   kill_req/data_size",
+     "load_unit.paddr_i",
+     "flush_ctrl_ex → flush_addr_i"],
+    fill=_ORF, border=_ORB, tsize=11, bsize=8.5, mono_body=True, align=PP_ALIGN.LEFT)
+box(s, 9.80, _cy, 3.18, _ch, "④  ARA VECTOR   “v<vd> 0x..”",
+    ["i_dispatcher.vtype_q.vsew/",
+     "   vlmul · vl_q → vsew·vl",
+     "gen_lanes[L].i_lane.vrf_wen/",
+     "   addr/wdata/be",
+     "   → shadow VRF → v[vd] data",
+     "",
+     "system-level taps (not bind)"],
+    fill=GOLD, border=GOLD_B, tsize=11, bsize=8.5, mono_body=True, align=PP_ALIGN.LEFT)
+label(s, 0.35, 6.86, 12.6,
+      "Scalar taps: instr_tracer_synth_bind.sv (bind ariane).   "
+      "Vector taps reach into i_ara, wired at ara_system level (tb_ara_system_trace.sv / exampleinit.sv).",
+      size=9.5, color=GREYTX, align=PP_ALIGN.LEFT, italic=True)
+
 # =========================================================================== SLIDE 5
 s = slide()
 title_bar(s, "Co-simulation verification flow",

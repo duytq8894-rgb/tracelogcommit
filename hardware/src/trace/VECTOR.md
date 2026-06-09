@@ -95,20 +95,32 @@ loads (opcode `0x07`), `LMUL ≤ 1`.
   exclude them, so they emit the correct `x<rd>`/`f<rd>` scalar line (`trace_vector.md`
   §3.10). `vmv.s.x`/`vfmv.s.f` (same funct6, `OPMVX`/`OPFVF`) still write a vreg and
   stay on the vector path.
+- **Mask-result EEW** (`trace_vector.md` §3.13) — compares (`vmseq`/`vmslt`/…/`vmfeq`…),
+  mask-logicals, `vmadc`/`vmsbc`, and `vmsbf`/`vmsif`/`vmsof` write a bit-packed mask.
+  The sink (`is_mask_result`) now de-shuffles those at **EW8** instead of `vsew`, so
+  bit *i* = element *i*. ⚠️ Assumes Ara stores a mask with EW8 striping — **confirm in sim**.
+- **Vector-FP fflags** (`trace_vector.md` §3.14) — the vector tracer taps the per-lane
+  `fflags_ex_i`/`fflags_ex_valid_i` bus into the dispatcher, OR-reduces it, and the sink
+  appends `c1_fflags 0x<val>` to an OPFVV/OPFVF line. ⚠️ Best-effort timing (flags
+  captured at the FP-op commit, like all vector data) — **confirm in sim**.
 
 **Not yet handled — documented TODOs:**
 1. **LMUL > 1 (EMUL > 1)** — Spike prints `v<vd>, v<vd+1>, …` on one line. The record
    has `first`/`last` flags for this, but the capture currently emits one register
    (`first=last=1`). Needs a small per-instruction loop pushing `emul` records.
-2. **Widening dest (2·SEW)** and **mask-result EEW** — the de-shuffle uses `vtype.vsew`;
-   widening/mask writes use a different EEW, so those bytes will be mis-ordered
-   (affects e.g. the `vmseq`/`vmslt` mask result in `trace_vector.md` §3.13).
+2. **Widening dest (2·SEW)** — the de-shuffle uses `vtype.vsew`; a widening write
+   produces 2·SEW elements, so those bytes will be mis-ordered. (Mask EEW is now
+   handled — see above.)
 3. **Vector stores** (opcode `0x27`) — not emitted by the vector path; the scalar
    path prints a bare line (no `mem` tokens). `trace_vector.md` §3.5 wants one
-   `mem 0x<addr> 0x<value>` per element; that needs Ara's store address/data.
-4. **vset\*** — writes `x<rd>` + the `vl`/`vtype` CSRs. The scalar path prints the
-   `x<rd>` and the CSR tokens; matching `trace_vector.md` §3.1 (`c…_vtype`/`c…_vl`)
-   depends on those CSR writes being captured on the scalar commit pkt.
+   `mem 0x<addr> 0x<value>` per element. **Selected for implementation** — the viable
+   route is reconstruction from the shadow VRF (`v[vs3]`, and `v[vs2]` for indexed) +
+   base/stride scalar-operand taps, since per-element data is **not** observable at the
+   AXI level for unit-stride. Sizeable, timing-sensitive; pending.
+4. **vset\* vtype/vl tokens** — writes `x<rd>` (scalar path) + `c3105_vtype`/`c3104_vl`.
+   **Selected for implementation** — requires a scalar↔vector merge in the sink (emit a
+   vtype/vl side-record on a vset commit, append its tokens to the scalar `x<rd>` line);
+   pending. `c3104`=vl, `c3105`=vtype (RVV CSR 0xC20/0xC21).
 5. **In-flight vtype/vl** — we read Ara's *current* `vtype_q/vl_q` (like the scalar
    shadow regfile reads "most recent"); if a later vset has updated them before this
    instr commits, the de-shuffle EEW (`vsew`) can differ. Per-instruction

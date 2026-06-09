@@ -246,6 +246,12 @@ module tb_ara_system_trace import ara_pkg::*; import instr_tracer_synth_pkg::*; 
   assign vlmul_p = i_dut.i_ara.i_dispatcher.vtype_q.vlmul;
   assign vl_p    = i_dut.i_ara.i_dispatcher.vl_q;
 
+  // Per-lane vector FP flags bus (the dispatcher's fflags inputs) for §3.14.
+  logic [NrLanes-1:0][4:0] fflags_p;
+  logic [NrLanes-1:0]      fflags_valid_p;
+  assign fflags_p       = i_dut.i_ara.i_dispatcher.fflags_ex_i;
+  assign fflags_valid_p = i_dut.i_ara.i_dispatcher.fflags_ex_valid_i;
+
   vec_commit_log_pkt_t vec_beat;
   logic                vec_valid, vec_ready, vec_overflow;
 
@@ -266,6 +272,8 @@ module tb_ara_system_trace import ara_pkg::*; import instr_tracer_synth_pkg::*; 
     .vsew_i         ( vsew_p   ),
     .vlmul_i        ( vlmul_p  ),
     .vl_i           ( vl_p     ),
+    .fflags_i       ( fflags_p       ),
+    .fflags_valid_i ( fflags_valid_p ),
     .vrf_wen_i      ( vrf_wen_p   ),
     .vrf_addr_i     ( vrf_addr_p  ),
     .vrf_wdata_i    ( vrf_wdata_p ),

@@ -143,40 +143,68 @@ module instr_tracer_synth_sink import instr_tracer_synth_pkg::*; #(
   // Format one vector commit record into a Spike commit-log line, per
   // hardware/src/trace/trace_vector.md (§1 header, §2.1 element order, §3.2):
   //
-  //   <priv> 0x<pc> (0x<insn>) v<vd> 0x<VLEN-bit hex>
+  //   <priv> 0x<pc> (0x<insn>) v<vd> 0x<VLEN-bit hex> [c1_fflags 0x<val>]
   //
   // Element order (§2.1): the FULL VLEN register is printed (NO vl/vstart/vta/vma
   // masking), high element to the LEFT (MSB), element 0 to the RIGHT (LSB). That
   // ordering falls out naturally once the captured `data` -- which is in Ara's
   // lane-shuffled byte order -- is de-shuffled to architectural byte order with
   // ara_pkg::shuffle_index (the DUT's own function) and printed MSB-first by %h.
+  // The de-shuffle EEW is `vsew`, except a MASK result is de-shuffled at EW8 (§3.13,
+  // see is_mask_result). For a vector-FP op, a trailing c1_fflags token is added (§3.14).
   //
   // The e<sew>/<m|mf><lmul>/l<vl> vtype summary is intentionally NOT printed: the
   // targeted Spike commit-log version (see the trace_vector.md header note on
-  // per-version `v<n>` format) emits only the bare `v<vd> 0x<hex>` token. `vsew`
-  // is still used internally to drive the de-shuffle EEW.
+  // per-version `v<n>` format) emits only the bare `v<vd> 0x<hex>` token.
   //
   // No "core <id>:" prefix is emitted here -- the whole synth log uses the
   // prefix-less CVA6 form, matching the scalar spike_commit_str(); the
   // "core N:" prefix and the optional disasm of full Spike output are reconciled
   // by compare_spike_log.py at diff time.
   // ---------------------------------------------------------------------------
+  // True for OP-V instructions whose destination is a bit-packed MASK register
+  // (1 bit/element), so the snapshot must be de-shuffled at EW8 rather than vsew
+  // (trace_vector.md §3.13). Ara stores a mask result with EW8 striping, so byte
+  // n of the architectural bit string (bits [8n+7:8n] = elements 8n..8n+7) lives
+  // at physical byte shuffle_index(n, NrLanes, EW8). Covered families:
+  //   * integer/float compares + mask-logicals: funct6[5:3]==011 (any funct3
+  //     except OPMVX=110 / OPCFG=111)
+  //   * vmadc / vmsbc: funct6 010001 / 010011
+  //   * VMUNARY0 vmsbf/vmsof/vmsif: funct6 010100, OPMVV, rs1 ∈ {1,2,3}
+  // NOT viota/vid (funct6 010100, rs1 16/17) -- those write vsew-wide elements.
+  function automatic logic is_mask_result(logic [31:0] insn);
+    automatic logic [2:0] funct3 = insn[14:12];
+    automatic logic [5:0] funct6 = insn[31:26];
+    automatic logic [4:0] rs1    = insn[19:15];
+    if (insn[6:0] != 7'b1010111 || funct3 == 3'b111) return 1'b0;       // not OP-V / vset
+    is_mask_result = (funct6[5:3] == 3'b011 && funct3 != 3'b110)        // compares + mask-logical
+                   | (funct6 == 6'b010001) | (funct6 == 6'b010011)      // vmadc / vmsbc
+                   | (funct6 == 6'b010100 && funct3 == 3'b010
+                      && (rs1 == 5'd1 || rs1 == 5'd2 || rs1 == 5'd3));  // vmsbf/vmsof/vmsif
+  endfunction
+
   function automatic string spike_vec_str(vec_commit_log_pkt_t p);
     string                    s;
     logic [63:0]              pc64;
     logic [ara_pkg::VLEN-1:0] arch;       // natural (architectural) byte order
+    rvv_pkg::vew_e            ew;
     pc64 = 64'(p.pc);
+    // §3.13: a mask result is bit-packed (EW8 striping); all else uses vtype.vsew
+    ew = is_mask_result(p.instr) ? rvv_pkg::EW8 : rvv_pkg::vew_e'(p.vsew);
 
     // de-shuffle: natural byte n lives at physical byte shuffle_index(n)
     arch = '0;
     for (int unsigned n = 0; n < ara_pkg::VLENB; n++) begin
-      automatic int unsigned ph = ara_pkg::shuffle_index(n, NrLanes, rvv_pkg::vew_e'(p.vsew));
+      automatic int unsigned ph = ara_pkg::shuffle_index(n, NrLanes, ew);
       arch[n*8 +: 8] = p.data[ph*8 +: 8];
     end
 
     // header: "<priv> 0x<pc> (0x<insn>)" then the single " v<vd> 0x.." writeback
     s = $sformatf("%d 0x%h (0x%h)", p.priv, pc64, p.instr);
     s = {s, $sformatf(" v%0d 0x%h", p.vd, arch)};
+    // §3.14: vector FP exception flags follow the register (c1 = CSR 0x001 fflags)
+    if (p.fflags_valid)
+      s = {s, $sformatf(" c1_fflags 0x%h", 64'(p.fflags))};
     return s;
   endfunction
 
